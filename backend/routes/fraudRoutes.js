@@ -11,8 +11,10 @@ router.use(requireAuth);
 // see this screen or its data, only the pass/fail verdict it produces.
 router.use(requireRole('admin'));
 
-// GET /fraud?search=... - list the caller's tenant fraud watch-list,
-// newest first, optionally filtered by a case-insensitive name match.
+// GET /fraud?search=&page=&limit= - list the caller's tenant fraud
+// watch-list, newest first, optionally filtered by a case-insensitive
+// name match and paginated (default 10/page, max 100). Response is
+// { items, total, page, limit, totalPages }.
 router.get('/', async (req, res) => {
   const { search } = req.query;
   const query = { companyId: req.user.companyId };
@@ -24,10 +26,20 @@ router.get('/', async (req, res) => {
     query.name = { $regex: escaped, $options: 'i' };
   }
 
-  const entries = await FraudCompany.find(query)
-    .populate('addedBy', 'name email')
-    .sort({ addedAt: -1 });
-  res.json(entries);
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
+  const skip = (page - 1) * limit;
+
+  const [items, total] = await Promise.all([
+    FraudCompany.find(query)
+      .populate('addedBy', 'name email')
+      .sort({ addedAt: -1 })
+      .skip(skip)
+      .limit(limit),
+    FraudCompany.countDocuments(query),
+  ]);
+
+  res.json({ items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) });
 });
 
 // POST /fraud - add a new company to the watch-list.

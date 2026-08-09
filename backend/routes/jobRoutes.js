@@ -13,11 +13,25 @@ router.use(requireAuth);
 // with how many candidates have been registered against it (so the list
 // doubles as a quick pipeline overview, and so the UI can warn before
 // letting someone upload resumes against a job with 0 candidates so far).
+// Optional ?search=... matches the job title (case-insensitive substring).
+// Optional ?page=&limit= paginate the result (default 10/page, max 100) -
+// response is { items, total, page, limit, totalPages }.
 router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
   const companyId = new mongoose.Types.ObjectId(req.user.companyId);
 
-  const jobs = await Job.aggregate([
-    { $match: { companyId } },
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
+  const skip = (page - 1) * limit;
+
+  const match = { companyId };
+  const { search } = req.query;
+  if (search && search.trim()) {
+    const escaped = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    match.title = { $regex: escaped, $options: 'i' };
+  }
+
+  const [result] = await Job.aggregate([
+    { $match: match },
     { $sort: { createdAt: -1 } },
     {
       $lookup: {
@@ -32,9 +46,16 @@ router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) =>
         candidateCount: { $ifNull: [{ $arrayElemAt: ['$candidateCount.count', 0] }, 0] },
       },
     },
+    {
+      $facet: {
+        items: [{ $skip: skip }, { $limit: limit }],
+        totalCount: [{ $count: 'count' }],
+      },
+    },
   ]);
 
-  res.json(jobs);
+  const total = result.totalCount[0]?.count || 0;
+  res.json({ items: result.items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) });
 });
 
 // GET /jobs/:id

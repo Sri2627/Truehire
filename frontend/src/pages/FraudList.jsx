@@ -1,6 +1,91 @@
 import React, { useEffect, useState } from 'react';
 import Layout from '../components/Layout.jsx';
+import Pagination from '../components/Pagination.jsx';
 import api from '../api';
+
+// "Add a company to the watch-list" flow, in a popup - same pattern as the
+// job/candidate creation modals elsewhere in the app.
+function NewFraudCompanyModal({ onClose, onAdded }) {
+  const [name, setName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  async function handleAdd(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+
+    setSaving(true);
+    setError('');
+    try {
+      const { data } = await api.post('/fraud', { name });
+      onAdded(data);
+      onClose();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Could not add company');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="scanning-overlay" onClick={saving ? undefined : onClose}>
+      <div
+        className="scanning-card"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 500, maxWidth: '92vw', textAlign: 'left', padding: 28, position: 'relative' }}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          disabled={saving}
+          style={{
+            position: 'absolute',
+            top: 16,
+            right: 16,
+            background: 'none',
+            border: 'none',
+            color: 'var(--muted)',
+            cursor: 'pointer',
+            fontSize: '1.3rem',
+            lineHeight: 1,
+            padding: 4,
+          }}
+        >
+          ✕
+        </button>
+
+        <h3 style={{ marginTop: 0, paddingRight: 28 }}>Add a company to the watch-list</h3>
+        <form onSubmit={handleAdd}>
+          <label>Company name</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. 3 Star Communication Pvt Ltd"
+            required
+            autoFocus
+          />
+
+          {error && <p className="error-text">{error}</p>}
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+              style={{ background: 'none', border: '1px solid var(--line)', color: 'var(--muted)', borderRadius: 6, padding: '0 16px', height: 38, cursor: 'pointer', marginTop: 20 }}
+            >
+              Cancel
+            </button>
+            <button className="btn-primary" type="submit" disabled={saving} style={{ width: 140, height: 38 }}>
+              {saving ? 'Adding…' : 'Add company'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 // Delete button with an inline "are you sure" confirm step, matching the
 // pattern used for deleting candidates.
@@ -62,102 +147,82 @@ function DeleteEntryButton({ entry, onDeleted }) {
 
 export default function FraudList() {
   const [entries, setEntries] = useState([]);
-  const [name, setName] = useState('');
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageInfo, setPageInfo] = useState({ total: 0, totalPages: 1 });
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const [addError, setAddError] = useState('');
+  const [showAddModal, setShowAddModal] = useState(false);
 
-  function loadEntries(searchValue) {
+  function loadEntries(searchValue = search, pageValue = page) {
     setLoading(true);
     api
-      .get('/fraud', { params: searchValue ? { search: searchValue } : {} })
-      .then((res) => setEntries(Array.isArray(res.data) ? res.data : []))
+      .get('/fraud', { params: { search: searchValue || undefined, page: pageValue, limit: 10 } })
+      .then((res) => {
+        setEntries(Array.isArray(res.data.items) ? res.data.items : []);
+        setPageInfo({ total: res.data.total || 0, totalPages: res.data.totalPages || 1 });
+      })
       .catch(() => setError('Could not load the fraud watch-list'))
       .finally(() => setLoading(false));
   }
 
   // Initial load.
-  useEffect(() => loadEntries(''), []);
+  useEffect(() => loadEntries('', 1), []);
 
-  // Debounce the search box so we're not firing a request on every
-  // keystroke.
+  // Debounce the search box, and reset to page 1 whenever it changes.
   useEffect(() => {
-    const timer = setTimeout(() => loadEntries(search), 350);
+    const timer = setTimeout(() => {
+      setPage(1);
+      loadEntries(search, 1);
+    }, 350);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  async function handleAdd(e) {
-    e.preventDefault();
-    if (!name.trim()) return;
+  function handlePageChange(nextPage) {
+    setPage(nextPage);
+    loadEntries(search, nextPage);
+  }
 
-    setSaving(true);
-    setAddError('');
-    try {
-      const { data } = await api.post('/fraud', { name });
-      // Only splice the new entry into the visible list if it would
-      // actually match the current search filter.
-      if (!search.trim() || data.name.toLowerCase().includes(search.trim().toLowerCase())) {
-        setEntries((prev) => [data, ...prev]);
-      }
-      setName('');
-    } catch (err) {
-      setAddError(err.response?.data?.error || 'Could not add company');
-    } finally {
-      setSaving(false);
-    }
+  function handleAdded() {
+    // Simplest correct way to reflect a new entry under the current
+    // search/page state (which page it lands on depends on sort order) -
+    // just reload page 1.
+    setPage(1);
+    loadEntries(search, 1);
   }
 
   function handleDeleted(id) {
     setEntries((prev) => prev.filter((e) => e._id !== id));
+    setPageInfo((prev) => ({ ...prev, total: Math.max(prev.total - 1, 0) }));
   }
 
   return (
     <Layout>
       <div className="topbar">
         <h2>Fraud watch-list</h2>
+        <button className="btn-primary" onClick={() => setShowAddModal(true)} style={{ width: 180 }}>
+          + Add new company
+        </button>
       </div>
 
-      <div className="card">
-        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
-          <form onSubmit={handleAdd} style={{ flex: 1, minWidth: 280 }}>
-            <h3 style={{ marginTop: 0 }}>Add a company to the watch-list</h3>
-            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
-              <div style={{ flex: 1 }}>
-                <label>Company name</label>
-                <input
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. 3 Star Communication Pvt Ltd"
-                  required
-                />
-              </div>
-              <button className="btn-primary" type="submit" disabled={saving} style={{ width: 140 }}>
-                {saving ? 'Adding…' : 'Add company'}
-              </button>
-            </div>
-            {addError && <p className="error-text">{addError}</p>}
-          </form>
+      {showAddModal && (
+        <NewFraudCompanyModal onClose={() => setShowAddModal(false)} onAdded={handleAdded} />
+      )}
 
-          <div style={{ width: 1, background: 'var(--line)', alignSelf: 'stretch' }} />
-
-          <div style={{ flex: 1, minWidth: 280 }}>
-            <h3 style={{ marginTop: 0 }}>Search watch-list</h3>
-            <label>Company name</label>
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by company name…"
-            />
-            {search && (
-              <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginTop: 6 }}>
-                {loading ? 'Searching…' : `${entries.length} match${entries.length === 1 ? '' : 'es'}`}
-              </p>
-            )}
-          </div>
-        </div>
+      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <label style={{ margin: 0 }}>Search</label>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by company name…"
+          style={{ maxWidth: 320 }}
+        />
+        {search && (
+          <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+            {loading ? 'Searching…' : `${pageInfo.total} match${pageInfo.total === 1 ? '' : 'es'}`}
+          </span>
+        )}
       </div>
 
       <div className="card">
@@ -189,10 +254,11 @@ export default function FraudList() {
         )}
         {!loading && entries.length === 0 && (
           <p style={{ color: 'var(--muted)' }}>
-            {search ? 'No companies match your search.' : 'No companies on the watch-list yet — add one above.'}
+            {search ? 'No companies match your search.' : 'No companies on the watch-list yet — click "+ Add new company" above.'}
           </p>
         )}
         {error && <p className="error-text">{error}</p>}
+        <Pagination page={page} totalPages={pageInfo.totalPages} total={pageInfo.total} onChange={handlePageChange} />
       </div>
     </Layout>
   );

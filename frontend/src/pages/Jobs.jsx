@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
+import Pagination from '../components/Pagination.jsx';
 import api from '../api';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -159,18 +160,40 @@ export default function Jobs() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [showNewJobModal, setShowNewJobModal] = useState(false);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageInfo, setPageInfo] = useState({ total: 0, totalPages: 1 });
 
-  function loadJobs() {
+  function loadJobs(searchValue = search, pageValue = page) {
     setLoading(true);
     setError('');
     api
-      .get('/jobs')
-      .then((res) => setJobs(Array.isArray(res.data) ? res.data : []))
+      .get('/jobs', { params: { search: searchValue || undefined, page: pageValue, limit: 10 } })
+      .then((res) => {
+        setJobs(Array.isArray(res.data.items) ? res.data.items : []);
+        setPageInfo({ total: res.data.total || 0, totalPages: res.data.totalPages || 1 });
+      })
       .catch((err) => setError(err.response?.data?.error || 'Could not load job postings'))
       .finally(() => setLoading(false));
   }
 
-  useEffect(loadJobs, []);
+  // Initial load.
+  useEffect(() => loadJobs('', 1), []);
+
+  // Debounce the search box, and reset to page 1 whenever it changes.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setPage(1);
+      loadJobs(search, 1);
+    }, 350);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  function handlePageChange(nextPage) {
+    setPage(nextPage);
+    loadJobs(search, nextPage);
+  }
 
   async function toggleStatus(job) {
     const status = job.status === 'open' ? 'closed' : 'open';
@@ -180,6 +203,7 @@ export default function Jobs() {
 
   function handleJobDeleted(jobId) {
     setJobs((prev) => prev.filter((j) => j._id !== jobId));
+    setPageInfo((prev) => ({ ...prev, total: Math.max(prev.total - 1, 0) }));
   }
 
   const canManage = hasRole('admin', 'recruiter');
@@ -195,8 +219,23 @@ export default function Jobs() {
         )}
       </div>
 
+      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <label style={{ margin: 0 }}>Search</label>
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by job title…"
+          style={{ maxWidth: 320 }}
+        />
+        {search && (
+          <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+            {loading ? 'Searching…' : `${pageInfo.total} match${pageInfo.total === 1 ? '' : 'es'}`}
+          </span>
+        )}
+      </div>
+
       {showNewJobModal && (
-        <NewJobModal onClose={() => setShowNewJobModal(false)} onCreated={loadJobs} />
+        <NewJobModal onClose={() => setShowNewJobModal(false)} onCreated={() => loadJobs(search, 1)} />
       )}
 
       <div className="card">
@@ -205,7 +244,9 @@ export default function Jobs() {
           <p>Loading…</p>
         ) : jobs.length === 0 ? (
           <p style={{ color: 'var(--muted)' }}>
-            No job postings yet{canManage ? ' — click "+ Create job posting" above before registering candidates.' : '.'}
+            {search
+              ? 'No job postings match your search.'
+              : `No job postings yet${canManage ? ' — click "+ Create job posting" above before registering candidates.' : '.'}`}
           </p>
         ) : (
           <table>
@@ -250,6 +291,7 @@ export default function Jobs() {
             </tbody>
           </table>
         )}
+        <Pagination page={page} totalPages={pageInfo.totalPages} total={pageInfo.total} onChange={handlePageChange} />
       </div>
     </Layout>
   );

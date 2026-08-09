@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
+import Pagination from '../components/Pagination.jsx';
 import api from '../api';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -1036,25 +1037,63 @@ export default function Candidates() {
   const [overlayStage, setOverlayStage] = useState('');
   const [showNewCandidateModal, setShowNewCandidateModal] = useState(false);
   const [showBulkUploadModal, setShowBulkUploadModal] = useState(false);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageInfo, setPageInfo] = useState({ total: 0, totalPages: 1 });
 
   function loadJobs() {
+    // Used to populate the "Filter by job" dropdown and the job pickers in
+    // the New Candidate / Bulk Upload modals - needs every job, not one
+    // page of the (separately paginated) Jobs list page.
     api
-      .get('/jobs')
-      .then((res) => setJobs(Array.isArray(res.data) ? res.data : []))
+      .get('/jobs', { params: { limit: 100 } })
+      .then((res) => setJobs(Array.isArray(res.data.items) ? res.data.items : []))
       .catch(() => {});
   }
 
-  function loadCandidates() {
+  function loadCandidates(searchValue = search, pageValue = page) {
     setLoading(true);
     api
-      .get('/candidates', { params: jobIdFilter ? { jobId: jobIdFilter } : {} })
-      .then((res) => setCandidates(res.data))
+      .get('/candidates', {
+        params: {
+          jobId: jobIdFilter || undefined,
+          search: searchValue || undefined,
+          page: pageValue,
+          limit: 10,
+        },
+      })
+      .then((res) => {
+        setCandidates(Array.isArray(res.data.items) ? res.data.items : []);
+        setPageInfo({ total: res.data.total || 0, totalPages: res.data.totalPages || 1 });
+      })
       .catch(() => setError('Could not load candidates'))
       .finally(() => setLoading(false));
   }
 
   useEffect(loadJobs, []);
-  useEffect(loadCandidates, [jobIdFilter]);
+
+  // Job filter changes (from the dropdown, or a "?jobId=" link from the
+  // Jobs page) reset back to page 1.
+  useEffect(() => {
+    setPage(1);
+    loadCandidates(search, 1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobIdFilter]);
+
+  // Debounce the search box, and reset to page 1 whenever it changes.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setPage(1);
+      loadCandidates(search, 1);
+    }, 350);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  function handlePageChange(nextPage) {
+    setPage(nextPage);
+    loadCandidates(search, nextPage);
+  }
 
   function handleScreened(candidateId, screening) {
     setCandidates((prev) =>
@@ -1064,6 +1103,7 @@ export default function Candidates() {
 
   function handleDeleted(candidateId) {
     setCandidates((prev) => prev.filter((c) => c._id !== candidateId));
+    setPageInfo((prev) => ({ ...prev, total: Math.max(prev.total - 1, 0) }));
   }
 
   function handleEdited(candidateId, updated) {
@@ -1101,25 +1141,42 @@ export default function Candidates() {
         )}
       </div>
 
-      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <label style={{ margin: 0 }}>Filter by job</label>
-        <select value={jobIdFilter} onChange={(e) => handleJobFilterChange(e.target.value)} style={{ maxWidth: 320 }}>
-          <option value="">All jobs</option>
-          {jobs.map((j) => (
-            <option key={j._id} value={j._id}>
-              {j.title} {j.status === 'closed' ? '(closed)' : ''}
-            </option>
-          ))}
-        </select>
-        {jobIdFilter && !filteredJob && jobs.length > 0 && (
-          <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>(job not found)</span>
-        )}
+      <div className="card" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <label style={{ margin: 0 }}>Search</label>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name, email, or phone…"
+            style={{ maxWidth: 280 }}
+          />
+          {search && (
+            <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>
+              {loading ? 'Searching…' : `${pageInfo.total} match${pageInfo.total === 1 ? '' : 'es'}`}
+            </span>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <label style={{ margin: 0 }}>Filter by job</label>
+          <select value={jobIdFilter} onChange={(e) => handleJobFilterChange(e.target.value)} style={{ maxWidth: 260 }}>
+            <option value="">All jobs</option>
+            {jobs.map((j) => (
+              <option key={j._id} value={j._id}>
+                {j.title} {j.status === 'closed' ? '(closed)' : ''}
+              </option>
+            ))}
+          </select>
+          {jobIdFilter && !filteredJob && jobs.length > 0 && (
+            <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>(job not found)</span>
+          )}
+        </div>
       </div>
 
       {showNewCandidateModal && (
         <NewCandidateModal
           onClose={() => setShowNewCandidateModal(false)}
-          onRegistered={loadCandidates}
+          onRegistered={() => loadCandidates()}
           setOverlayStage={setOverlayStage}
           setScanning={setScanning}
           jobs={jobs}
@@ -1193,10 +1250,15 @@ export default function Candidates() {
         )}
         {!loading && candidates.length === 0 && (
           <p style={{ color: 'var(--muted)' }}>
-            {jobIdFilter ? 'No candidates for this job yet.' : 'No candidates yet — click "+ New candidate" above.'}
+            {search
+              ? 'No candidates match your search.'
+              : jobIdFilter
+              ? 'No candidates for this job yet.'
+              : 'No candidates yet — click "+ New candidate" above.'}
           </p>
         )}
         {error && <p className="error-text">{error}</p>}
+        <Pagination page={page} totalPages={pageInfo.totalPages} total={pageInfo.total} onChange={handlePageChange} />
       </div>
     </Layout>
   );

@@ -80,9 +80,16 @@ async function runScreening({ candidate, file, userId, extractedText: preExtract
 // each with its most recent screening verdict (if any) for the list badge
 // and its job's title (candidates are always registered against a job).
 // Optional ?jobId=... narrows the list to a single job posting's pipeline.
+// Optional ?search=... matches name/email/phone (case-insensitive
+// substring). Optional ?page=&limit= paginate the result (default 10/page,
+// max 100) - response is { items, total, page, limit, totalPages }.
 // admin, recruiter, and viewer can all read.
 router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
   const companyId = new mongoose.Types.ObjectId(req.user.companyId);
+
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 100);
+  const skip = (page - 1) * limit;
 
   const match = { companyId };
   if (req.query.jobId) {
@@ -92,7 +99,16 @@ router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) =>
     match.jobId = new mongoose.Types.ObjectId(req.query.jobId);
   }
 
-  const candidates = await Candidate.aggregate([
+  const { search } = req.query;
+  if (search && search.trim()) {
+    // Escape regex special characters so a search like "a+b" or "(pvt)"
+    // doesn't blow up as an invalid pattern.
+    const escaped = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = { $regex: escaped, $options: 'i' };
+    match.$or = [{ name: re }, { email: re }, { phone: re }];
+  }
+
+  const [result] = await Candidate.aggregate([
     { $match: match },
     { $sort: { createdAt: -1 } },
     {
@@ -118,9 +134,55 @@ router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) =>
       },
     },
     { $addFields: { job: { $arrayElemAt: ['$job', 0] } } },
+    {
+      $facet: {
+        items: [{ $skip: skip }, { $limit: limit }],
+        totalCount: [{ $count: 'count' }],
+      },
+    },
   ]);
 
-  res.json(candidates);
+  const total = result.totalCount[0]?.count || 0;
+  res.json({ items: result.items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) });
+});
+
+// GET /candidates/stats - lightweight counts for the dashboard (total,
+// verified, flagged, in-progress) - computed server-side via aggregation
+// so the dashboard doesn't have to pull every candidate record just to
+// count them, now that the list itself is paginated.
+router.get('/stats', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+  const companyId = new mongoose.Types.ObjectId(req.user.companyId);
+
+  const [result] = await Candidate.aggregate([
+    { $match: { companyId } },
+    {
+      $lookup: {
+        from: 'screenings',
+        let: { cid: '$_id' },
+        pipeline: [
+          { $match: { $expr: { $eq: ['$candidateId', '$$cid'] } } },
+          { $sort: { screenedAt: -1 } },
+          { $limit: 1 },
+          { $project: { verdict: 1 } },
+        ],
+        as: 'latestScreening',
+      },
+    },
+    { $addFields: { verdict: { $arrayElemAt: ['$latestScreening.verdict', 0] } } },
+    {
+      $group: {
+        _id: null,
+        total: { $sum: 1 },
+        verified: { $sum: { $cond: [{ $eq: ['$verdict', 'clear'] }, 1, 0] } },
+        flagged: { $sum: { $cond: [{ $eq: ['$verdict', 'flagged'] }, 1, 0] } },
+      },
+    },
+  ]);
+
+  const total = result?.total || 0;
+  const verified = result?.verified || 0;
+  const flagged = result?.flagged || 0;
+  res.json({ total, verified, flagged, inProgress: total - verified - flagged });
 });
 
 // POST /candidates - create a candidate record AND screen their resume in

@@ -8,8 +8,18 @@ const router = express.Router();
 router.use(requireAuth);
 
 // GET /team - list team members and roles (admin only, per spec Screen 14).
+// Optional ?search=... matches name/email (case-insensitive substring).
 router.get('/', requireRole('admin'), async (req, res) => {
-  const team = await User.find({ companyId: req.user.companyId }).select('-passwordHash');
+  const match = { companyId: req.user.companyId };
+
+  const { search } = req.query;
+  if (search && search.trim()) {
+    const escaped = search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = { $regex: escaped, $options: 'i' };
+    match.$or = [{ name: re }, { email: re }];
+  }
+
+  const team = await User.find(match).select('-passwordHash').sort({ name: 1 });
   res.json(team);
 });
 

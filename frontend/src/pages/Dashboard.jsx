@@ -6,42 +6,39 @@ import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const [candidates, setCandidates] = useState([]);
+  const [stats, setStats] = useState({ total: 0, verified: 0, flagged: 0, inProgress: 0 });
+  const [jobsCount, setJobsCount] = useState(0);
+  const [recent, setRecent] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    api
-      .get('/candidates')
-      .then((res) => setCandidates(res.data))
-      .catch(() => setCandidates([]))
+    setLoading(true);
+    Promise.all([
+      api.get('/candidates/stats'),
+      api.get('/jobs', { params: { limit: 1 } }),
+      // Most recent 5 candidates, most recently created first - the same
+      // order the list page uses by default, so this doubles as an
+      // accurate "what just happened" feed without pulling every record.
+      api.get('/candidates', { params: { limit: 5 } }),
+    ])
+      .then(([statsRes, jobsRes, candidatesRes]) => {
+        setStats(statsRes.data);
+        setJobsCount(jobsRes.data.total || 0);
+        setRecent(Array.isArray(candidatesRes.data.items) ? candidatesRes.data.items : []);
+      })
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
-  // GET /candidates includes each candidate's latestScreening (see
-  // routes/candidateRoutes.js), so these are real counts from the fraud
-  // watch-list scan - not placeholders.
-  const total = candidates.length;
-  const verified = candidates.filter((c) => c.latestScreening?.verdict === 'clear').length;
-  const flagged = candidates.filter((c) => c.latestScreening?.verdict === 'flagged').length;
-  const inProgress = total - verified - flagged; // added but not screened yet
+  const { total, verified, flagged } = stats;
 
   const segments = [
     { label: 'Verified', value: verified, color: '#7c5cff' },
-    { label: 'In progress', value: inProgress, color: '#4f8cff' },
+    { label: 'In progress', value: stats.inProgress, color: '#4f8cff' },
     { label: 'Flagged', value: flagged, color: '#f2596b' },
   ];
 
   const pct = (v) => (total ? Math.round((v / total) * 100) : 0);
-
-  // Recent activity: prefer candidates with a screening timestamp, most
-  // recent first, falling back to "added" for anyone not screened yet.
-  const recent = [...candidates]
-    .sort((a, b) => {
-      const at = new Date(a.latestScreening?.screenedAt || a.createdAt);
-      const bt = new Date(b.latestScreening?.screenedAt || b.createdAt);
-      return bt - at;
-    })
-    .slice(0, 5);
 
   return (
     <Layout>
@@ -64,8 +61,8 @@ export default function Dashboard() {
           <div className="label">Fraud detected</div>
         </div>
         <div className="stat">
-          <div className="n warning">{inProgress}</div>
-          <div className="label">In progress</div>
+          <div className="n">{loading ? '—' : jobsCount}</div>
+          <div className="label">Jobs posted</div>
         </div>
       </div>
 
@@ -97,7 +94,7 @@ export default function Dashboard() {
           <h3>Recent activity</h3>
           {loading ? (
             <p style={{ color: 'var(--muted)' }}>Loading…</p>
-          ) : candidates.length === 0 ? (
+          ) : recent.length === 0 ? (
             <p style={{ color: 'var(--muted)', fontSize: '0.88rem' }}>
               Nothing yet. New candidates will show up here as they're added.
             </p>
