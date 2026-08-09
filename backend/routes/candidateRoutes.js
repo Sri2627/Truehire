@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
 const Candidate = require('../models/Candidate');
+const Job = require('../models/Job');
 const FraudCompany = require('../models/FraudCompany');
 const Screening = require('../models/Screening');
 const UanRecord = require('../models/UanRecord');
@@ -17,12 +18,37 @@ const router = express.Router();
 // All candidate routes require a valid JWT.
 router.use(requireAuth);
 
+const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
+
+// Bulk upload has no per-file name/email form fields (it's just a pile of
+// resumes), so best-effort-guess both: the email from the extracted resume
+// text, and the name from the file name (recruiters near-universally name
+// resume files after the candidate, e.g. "Jane_Doe_Resume.pdf").
+function guessNameFromFilename(originalName) {
+  const base = path.basename(originalName, path.extname(originalName));
+  const cleaned = base
+    .replace(/[_\-.]+/g, ' ')
+    .replace(/\b(resume|cv|final|updated|copy|new)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return 'Unnamed candidate';
+  return cleaned
+    .split(' ')
+    .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(' ');
+}
+
+function guessEmailFromText(text) {
+  const match = EMAIL_RE.exec(String(text || ''));
+  return match ? match[0] : undefined;
+}
+
 // Shared by POST /candidates and POST /candidates/:id/screen: extracts the
 // uploaded resume's text, matches it against the caller's tenant fraud
 // list, and records a Screening. Returns the populated screening doc.
-async function runScreening({ candidate, file, userId }) {
-  const buffer = fs.readFileSync(file.path);
-  const extractedText = await extractResumeText(buffer, file.originalname);
+async function runScreening({ candidate, file, userId, extractedText: preExtracted }) {
+  const extractedText =
+    preExtracted !== undefined ? preExtracted : await extractResumeText(fs.readFileSync(file.path), file.originalname);
 
   const fraudCompanies = await FraudCompany.find({ companyId: candidate.companyId });
   const { verdict, fraudMatches } = screenResumeText(extractedText, fraudCompanies);
@@ -51,13 +77,23 @@ async function runScreening({ candidate, file, userId }) {
 }
 
 // GET /candidates - list/search candidates for the caller's company,
-// each with its most recent screening verdict (if any) for the list badge.
+// each with its most recent screening verdict (if any) for the list badge
+// and its job's title (candidates are always registered against a job).
+// Optional ?jobId=... narrows the list to a single job posting's pipeline.
 // admin, recruiter, and viewer can all read.
 router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
   const companyId = new mongoose.Types.ObjectId(req.user.companyId);
 
+  const match = { companyId };
+  if (req.query.jobId) {
+    if (!mongoose.isValidObjectId(req.query.jobId)) {
+      return res.status(400).json({ error: 'Invalid jobId' });
+    }
+    match.jobId = new mongoose.Types.ObjectId(req.query.jobId);
+  }
+
   const candidates = await Candidate.aggregate([
-    { $match: { companyId } },
+    { $match: match },
     { $sort: { createdAt: -1 } },
     {
       $lookup: {
@@ -73,6 +109,15 @@ router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) =>
       },
     },
     { $addFields: { latestScreening: { $arrayElemAt: ['$latestScreening', 0] } } },
+    {
+      $lookup: {
+        from: 'jobs',
+        localField: 'jobId',
+        foreignField: '_id',
+        as: 'job',
+      },
+    },
+    { $addFields: { job: { $arrayElemAt: ['$job', 0] } } },
   ]);
 
   res.json(candidates);
@@ -90,14 +135,26 @@ router.post('/', requireRole('admin', 'recruiter'), upload.single('resume'), asy
     return res.status(400).json({ error: 'A resume file (PDF or DOCX) is required to register a candidate' });
   }
 
+  const { name, email, phone, jobId } = req.body;
+
+  if (!jobId || !mongoose.isValidObjectId(jobId)) {
+    fs.unlink(req.file.path, () => {});
+    return res.status(400).json({ error: 'A jobId is required — register the candidate against a job posting' });
+  }
+
+  const job = await Job.findOne({ _id: jobId, companyId: req.user.companyId });
+  if (!job) {
+    fs.unlink(req.file.path, () => {});
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
   let candidate;
   try {
-    const { name, email, phone } = req.body;
-
     candidate = await Candidate.create({
       name,
       email,
       phone,
+      jobId: job._id,
       companyId: req.user.companyId,
       createdBy: req.user.id,
     });
@@ -109,6 +166,82 @@ router.post('/', requireRole('admin', 'recruiter'), upload.single('resume'), asy
     if (candidate) await Candidate.deleteOne({ _id: candidate._id });
     res.status(400).json({ error: err.message || 'Could not register candidate' });
   }
+});
+
+// POST /candidates/bulk - register + screen many resumes at once against a
+// single job posting. Field name "resumes" (multipart, up to 50 files per
+// request), plus a jobId. Each file becomes its own candidate: name is
+// guessed from the file name, email from the resume text if present, and
+// each one is screened against the fraud watch-list exactly like a single
+// upload. One bad file (unreadable, wrong type) does not fail the whole
+// batch — it's reported per-file in the response so the rest still land.
+// admin/recruiter only, same as single-candidate registration.
+router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', 50), async (req, res) => {
+  const files = req.files || [];
+
+  if (files.length === 0) {
+    return res.status(400).json({ error: 'At least one resume file (PDF or DOCX) is required' });
+  }
+
+  const { jobId } = req.body;
+  if (!jobId || !mongoose.isValidObjectId(jobId)) {
+    files.forEach((f) => fs.unlink(f.path, () => {}));
+    return res.status(400).json({ error: 'A jobId is required — bulk-upload resumes against a job posting' });
+  }
+
+  const job = await Job.findOne({ _id: jobId, companyId: req.user.companyId });
+  if (!job) {
+    files.forEach((f) => fs.unlink(f.path, () => {}));
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  // Processed sequentially rather than in parallel: each file already does
+  // a decent amount of work (text extraction + fraud-list matching + a few
+  // writes), and keeping it sequential avoids hammering the DB/CPU with 50
+  // concurrent PDF parses from one request.
+  const results = [];
+  for (const file of files) {
+    let candidate;
+    try {
+      const extractedText = await extractResumeText(fs.readFileSync(file.path), file.originalname);
+
+      candidate = await Candidate.create({
+        name: guessNameFromFilename(file.originalname),
+        email: guessEmailFromText(extractedText),
+        jobId: job._id,
+        companyId: req.user.companyId,
+        createdBy: req.user.id,
+      });
+
+      const screening = await runScreening({ candidate, file, userId: req.user.id, extractedText });
+      results.push({
+        fileName: file.originalname,
+        success: true,
+        candidate,
+        screening,
+      });
+    } catch (err) {
+      fs.unlink(file.path, () => {});
+      if (candidate) await Candidate.deleteOne({ _id: candidate._id });
+      results.push({
+        fileName: file.originalname,
+        success: false,
+        error: err.message || 'Could not process this resume',
+      });
+    }
+  }
+
+  const succeeded = results.filter((r) => r.success).length;
+
+  await AuditLog.create({
+    userId: req.user.id,
+    action: 'bulk_upload_resumes',
+    entityType: 'job',
+    entityId: job._id,
+    metadata: { jobTitle: job.title, fileCount: files.length, succeeded, failed: files.length - succeeded },
+  });
+
+  res.status(201).json({ jobId: job._id, total: files.length, succeeded, failed: files.length - succeeded, results });
 });
 
 // GET /candidates/:id - full candidate detail.
@@ -158,6 +291,37 @@ router.get('/:id/screenings', requireRole('admin', 'recruiter', 'viewer'), async
     .sort({ screenedAt: -1 });
 
   res.json(screenings);
+});
+
+// PATCH /candidates/:id - edit name/email/phone. Primarily for cleaning up
+// the guessed name/email that bulk resume upload produces (guessed from
+// file name / resume text), but works for single-registered candidates
+// too. Only these three fields are editable here - resume, job, and
+// screening history go through their own dedicated routes.
+router.patch('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
+  const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
+  if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
+
+  const { name, email, phone } = req.body;
+  if (name !== undefined) candidate.name = name;
+  if (email !== undefined) candidate.email = email;
+  if (phone !== undefined) candidate.phone = phone;
+
+  try {
+    await candidate.save();
+  } catch (err) {
+    return res.status(400).json({ error: err.message || 'Could not update candidate' });
+  }
+
+  await AuditLog.create({
+    userId: req.user.id,
+    action: 'edit_candidate',
+    entityType: 'candidate',
+    entityId: candidate._id,
+    metadata: { name: candidate.name, email: candidate.email, phone: candidate.phone },
+  });
+
+  res.json(candidate);
 });
 
 // DELETE /candidates/:id - removes the candidate record, all of its

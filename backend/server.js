@@ -12,12 +12,14 @@ const { connectDB } = require('./config/db');
 require('./models/Company');
 require('./models/User');
 require('./models/FraudCompany');
+require('./models/Job');
 require('./models/Candidate');
 require('./models/Screening');
 require('./models/AuditLog');
 require('./models/InterviewInvite');
 
 const authRoutes = require('./routes/authRoutes');
+const jobRoutes = require('./routes/jobRoutes');
 const candidateRoutes = require('./routes/candidateRoutes');
 const teamRoutes = require('./routes/teamRoutes');
 const fraudRoutes = require('./routes/fraudRoutes');
@@ -32,6 +34,7 @@ app.use(morgan('dev'));
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.use('/auth', authRoutes);
+app.use('/jobs', jobRoutes);
 app.use('/candidates', candidateRoutes);
 app.use('/candidates/:id/interviews', interviewRoutes);
 app.use('/team', teamRoutes);

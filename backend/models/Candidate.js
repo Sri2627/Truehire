@@ -7,10 +7,13 @@ const candidateSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     resumeFileKey: { type: String }, // object storage reference, not the file itself
     extractedText: { type: String },
+    jobId: { type: mongoose.Schema.Types.ObjectId, ref: 'Job', required: true },
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   },
   { timestamps: { createdAt: 'createdAt', updatedAt: false } }
 );
+
+candidateSchema.index({ companyId: 1, jobId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Candidate', candidateSchema);

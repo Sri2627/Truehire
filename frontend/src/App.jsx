@@ -2,6 +2,7 @@ import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import Jobs from './pages/Jobs.jsx';
 import Candidates from './pages/Candidates.jsx';
 import Team from './pages/Team.jsx';
 import FraudList from './pages/FraudList.jsx';
@@ -17,6 +18,15 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Dashboard />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/jobs"
+        element={
+          <ProtectedRoute>
+            <Jobs />
           </ProtectedRoute>
         }
       />

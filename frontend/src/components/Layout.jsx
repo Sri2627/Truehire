@@ -35,6 +35,9 @@ export default function Layout({ children }) {
         <NavLink to="/dashboard" className={({ isActive }) => (isActive ? 'active' : '')}>
           Dashboard
         </NavLink>
+        <NavLink to="/jobs" className={({ isActive }) => (isActive ? 'active' : '')}>
+          Jobs
+        </NavLink>
         <NavLink to="/candidates" className={({ isActive }) => (isActive ? 'active' : '')}>
           Candidates
         </NavLink>

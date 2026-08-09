@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
 import api from '../api';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -83,8 +84,8 @@ function ScanResultPanel({ result, onDismiss, bare }) {
 // and - once scanning finishes - see the candidate's fraud-watch-list
 // status right there before closing, instead of hunting for it in the
 // table afterwards.
-function NewCandidateModal({ onClose, onRegistered, setOverlayStage, setScanning }) {
-  const [form, setForm] = useState({ name: '', email: '', phone: '' });
+function NewCandidateModal({ onClose, onRegistered, setOverlayStage, setScanning, jobs, defaultJobId }) {
+  const [form, setForm] = useState({ name: '', email: '', phone: '', jobId: defaultJobId || '' });
   const [resumeFile, setResumeFile] = useState(null);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -95,6 +96,11 @@ function NewCandidateModal({ onClose, onRegistered, setOverlayStage, setScanning
     e.preventDefault();
     setError('');
 
+    if (!form.jobId) {
+      setError('Choose which job posting this candidate is applying for');
+      return;
+    }
+
     if (!resumeFile) {
       setError('A resume (PDF or DOCX) is required to register a candidate');
       return;
@@ -104,6 +110,7 @@ function NewCandidateModal({ onClose, onRegistered, setOverlayStage, setScanning
     formData.append('name', form.name);
     formData.append('email', form.email);
     formData.append('phone', form.phone);
+    formData.append('jobId', form.jobId);
     formData.append('resume', resumeFile);
 
     setSubmitting(true);
@@ -160,6 +167,24 @@ function NewCandidateModal({ onClose, onRegistered, setOverlayStage, setScanning
           <>
             <h3 style={{ marginTop: 0, paddingRight: 28 }}>Register a candidate</h3>
             <form onSubmit={handleAdd}>
+              <div style={{ marginBottom: 12 }}>
+                <label>Job posting</label>
+                <select
+                  value={form.jobId}
+                  onChange={(e) => setForm({ ...form, jobId: e.target.value })}
+                  required
+                >
+                  <option value="" disabled>
+                    {jobs.length === 0 ? 'No job postings yet — create one first' : 'Select a job…'}
+                  </option>
+                  {jobs.map((j) => (
+                    <option key={j._id} value={j._id}>
+                      {j.title} {j.status === 'closed' ? '(closed)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               <div style={{ display: 'flex', gap: 12 }}>
                 <div style={{ flex: 1 }}>
                   <label>Name</label>
@@ -217,8 +242,260 @@ function NewCandidateModal({ onClose, onRegistered, setOverlayStage, setScanning
   );
 }
 
+// "Bulk upload resumes" flow: pick a job, pick many resume files in one
+// go, upload them all in a single request. The backend registers +
+// screens each one independently, so one bad file in the batch doesn't
+// sink the rest — the per-file outcome (registered/flagged/clear, or an
+// error) is shown once the batch comes back.
+function BulkUploadModal({ onClose, onUploaded, jobs, defaultJobId }) {
+  const [jobId, setJobId] = useState(defaultJobId || '');
+  const [files, setFiles] = useState([]);
+  const [error, setError] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [result, setResult] = useState(null);
+  const fileInputRef = useRef(null);
+
+  function handleFiles(e) {
+    setFiles(Array.from(e.target.files || []));
+  }
+
+  async function handleUpload(e) {
+    e.preventDefault();
+    setError('');
+
+    if (!jobId) {
+      setError('Choose which job posting these resumes are for');
+      return;
+    }
+    if (files.length === 0) {
+      setError('Select one or more resume files (PDF or DOCX)');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('jobId', jobId);
+    files.forEach((f) => formData.append('resumes', f));
+
+    setUploading(true);
+    try {
+      const { data } = await api.post('/candidates/bulk', formData);
+      setResult(data);
+      onUploaded();
+    } catch (err) {
+      setError(err.response?.data?.error || 'Bulk upload failed');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  return (
+    <div className="scanning-overlay" onClick={result ? undefined : onClose}>
+      <div
+        className="scanning-card"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: 640, maxWidth: '92vw', textAlign: 'left', padding: 28, position: 'relative' }}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          disabled={uploading}
+          style={{
+            position: 'absolute',
+            top: 16,
+            right: 16,
+            background: 'none',
+            border: 'none',
+            color: 'var(--muted)',
+            cursor: 'pointer',
+            fontSize: '1.3rem',
+            lineHeight: 1,
+            padding: 4,
+          }}
+        >
+          ✕
+        </button>
+
+        {result ? (
+          <>
+            <h3 style={{ marginTop: 0, paddingRight: 28 }}>Bulk upload complete</h3>
+            <p style={{ color: 'var(--muted)', fontSize: '0.86rem', marginTop: -6 }}>
+              {result.succeeded} of {result.total} resume(s) registered and screened
+              {result.failed > 0 ? `, ${result.failed} failed` : ''}.
+            </p>
+            <div style={{ maxHeight: 320, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 8 }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Candidate</th>
+                    <th>Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.results.map((r, i) => (
+                    <tr key={i}>
+                      <td style={{ fontSize: '0.82rem' }}>{r.fileName}</td>
+                      <td style={{ fontSize: '0.82rem' }}>{r.success ? r.candidate.name : '—'}</td>
+                      <td>
+                        {r.success ? (
+                          <span className={`badge ${r.screening.verdict}`}>
+                            {r.screening.verdict === 'flagged' ? 'Flagged' : 'Clear'}
+                          </span>
+                        ) : (
+                          <span className="error-text" style={{ fontSize: '0.8rem' }}>{r.error}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button className="btn-primary" onClick={onClose} style={{ width: 160, height: 38, marginTop: 16 }}>
+              Done
+            </button>
+          </>
+        ) : (
+          <>
+            <h3 style={{ marginTop: 0, paddingRight: 28 }}>Bulk upload resumes</h3>
+            <p style={{ color: 'var(--muted)', fontSize: '0.86rem', marginTop: -6 }}>
+              Select a job and as many resumes as you like — each one is registered as a candidate and screened
+              against the fraud watch-list automatically. Name is guessed from the file name and email from the
+              resume text, so double-check them afterwards in the candidate list.
+            </p>
+            <form onSubmit={handleUpload}>
+              <label>Job posting</label>
+              <select value={jobId} onChange={(e) => setJobId(e.target.value)} required>
+                <option value="" disabled>
+                  {jobs.length === 0 ? 'No job postings yet — create one first' : 'Select a job…'}
+                </option>
+                {jobs.map((j) => (
+                  <option key={j._id} value={j._id}>
+                    {j.title} {j.status === 'closed' ? '(closed)' : ''}
+                  </option>
+                ))}
+              </select>
+
+              <div style={{ marginTop: 12 }}>
+                <label>Resumes (PDF or DOCX, select multiple)</label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.docx"
+                  multiple
+                  required
+                  onChange={handleFiles}
+                />
+                {files.length > 0 && (
+                  <p style={{ color: 'var(--muted)', fontSize: '0.8rem', marginTop: 4 }}>
+                    {files.length} file(s) selected
+                  </p>
+                )}
+              </div>
+
+              {error && <p className="error-text">{error}</p>}
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={uploading}
+                  style={{ background: 'none', border: '1px solid var(--line)', color: 'var(--muted)', marginTop: '20px', borderRadius: 6, padding: '0 16px', height: 38, cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button className="btn-primary" type="submit" disabled={uploading} style={{ width: 220, height: 38 }}>
+                  {uploading ? `Uploading ${files.length || ''}…` : 'Upload & screen all'}
+                </button>
+              </div>
+            </form>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Delete button with an inline "are you sure" confirm step, rather than
 // a browser confirm() dialog, to match the rest of the app's styling.
+// A single candidate field (name/email/phone) that's plain text until
+// clicked, then becomes an input with Save/Cancel. Mainly for fixing the
+// guessed name/email that bulk resume upload produces, but works anywhere.
+function EditableField({ candidate, field, type = 'text', onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(candidate[field] || '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  function startEdit() {
+    setValue(candidate[field] || '');
+    setError('');
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    setSaving(true);
+    setError('');
+    try {
+      const { data } = await api.patch(`/candidates/${candidate._id}`, { [field]: value });
+      onSaved(candidate._id, data);
+      setEditing(false);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Could not save');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'Enter') handleSave();
+    if (e.key === 'Escape') setEditing(false);
+  }
+
+  if (!editing) {
+    return (
+      <td
+        onClick={startEdit}
+        title="Click to edit"
+        style={{ cursor: 'pointer' }}
+      >
+        {candidate[field] || <span style={{ color: 'var(--muted)' }}>—</span>}
+      </td>
+    );
+  }
+
+  return (
+    <td>
+      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+        <input
+          type={type}
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={saving}
+          style={{ minWidth: 120, height: 28, fontSize: '0.85rem' }}
+        />
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          style={{ background: 'var(--blue)', border: 'none', color: '#fff', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', fontSize: '0.75rem' }}
+        >
+          {saving ? '…' : '✓'}
+        </button>
+        <button
+          onClick={() => setEditing(false)}
+          disabled={saving}
+          style={{ background: 'none', border: '1px solid var(--line)', color: 'var(--muted)', borderRadius: 4, padding: '2px 8px', cursor: 'pointer', fontSize: '0.75rem' }}
+        >
+          ✕
+        </button>
+      </div>
+      {error && <p className="error-text" style={{ margin: '2px 0 0', fontSize: '0.75rem' }}>{error}</p>}
+    </td>
+  );
+}
+
 function DeleteCandidateButton({ candidate, onDeleted }) {
   const [confirming, setConfirming] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -748,23 +1025,36 @@ function InterviewActionsCell({ candidate }) {
 
 export default function Candidates() {
   const { hasRole } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const jobIdFilter = searchParams.get('jobId') || '';
+
+  const [jobs, setJobs] = useState([]);
   const [candidates, setCandidates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [scanning, setScanning] = useState(false);
   const [overlayStage, setOverlayStage] = useState('');
   const [showNewCandidateModal, setShowNewCandidateModal] = useState(false);
+  const [showBulkUploadModal, setShowBulkUploadModal] = useState(false);
+
+  function loadJobs() {
+    api
+      .get('/jobs')
+      .then((res) => setJobs(Array.isArray(res.data) ? res.data : []))
+      .catch(() => {});
+  }
 
   function loadCandidates() {
     setLoading(true);
     api
-      .get('/candidates')
+      .get('/candidates', { params: jobIdFilter ? { jobId: jobIdFilter } : {} })
       .then((res) => setCandidates(res.data))
       .catch(() => setError('Could not load candidates'))
       .finally(() => setLoading(false));
   }
 
-  useEffect(loadCandidates, []);
+  useEffect(loadJobs, []);
+  useEffect(loadCandidates, [jobIdFilter]);
 
   function handleScreened(candidateId, screening) {
     setCandidates((prev) =>
@@ -776,7 +1066,22 @@ export default function Candidates() {
     setCandidates((prev) => prev.filter((c) => c._id !== candidateId));
   }
 
+  function handleEdited(candidateId, updated) {
+    setCandidates((prev) =>
+      prev.map((c) => (c._id === candidateId ? { ...c, name: updated.name, email: updated.email, phone: updated.phone } : c))
+    );
+  }
+
+  function handleJobFilterChange(value) {
+    if (value) {
+      setSearchParams({ jobId: value });
+    } else {
+      setSearchParams({});
+    }
+  }
+
   const canScreen = hasRole('admin', 'recruiter');
+  const filteredJob = jobs.find((j) => j._id === jobIdFilter);
 
   return (
     <Layout>
@@ -785,9 +1090,29 @@ export default function Candidates() {
       <div className="topbar">
         <h2>Candidates</h2>
         {canScreen && (
-          <button className="btn-primary" onClick={() => setShowNewCandidateModal(true)} style={{ width: 160 }}>
-            + New candidate
-          </button>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-primary" onClick={() => setShowBulkUploadModal(true)} style={{ width: 190 }}>
+              ⇪ Bulk upload resumes
+            </button>
+            <button className="btn-primary" onClick={() => setShowNewCandidateModal(true)} style={{ width: 160 }}>
+              + New candidate
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        <label style={{ margin: 0 }}>Filter by job</label>
+        <select value={jobIdFilter} onChange={(e) => handleJobFilterChange(e.target.value)} style={{ maxWidth: 320 }}>
+          <option value="">All jobs</option>
+          {jobs.map((j) => (
+            <option key={j._id} value={j._id}>
+              {j.title} {j.status === 'closed' ? '(closed)' : ''}
+            </option>
+          ))}
+        </select>
+        {jobIdFilter && !filteredJob && jobs.length > 0 && (
+          <span style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>(job not found)</span>
         )}
       </div>
 
@@ -797,6 +1122,17 @@ export default function Candidates() {
           onRegistered={loadCandidates}
           setOverlayStage={setOverlayStage}
           setScanning={setScanning}
+          jobs={jobs}
+          defaultJobId={jobIdFilter}
+        />
+      )}
+
+      {showBulkUploadModal && (
+        <BulkUploadModal
+          onClose={() => setShowBulkUploadModal(false)}
+          onUploaded={() => { loadCandidates(); loadJobs(); }}
+          jobs={jobs}
+          defaultJobId={jobIdFilter}
         />
       )}
 
@@ -810,6 +1146,7 @@ export default function Candidates() {
                 <th>Name</th>
                 <th>Email</th>
                 <th>Phone</th>
+                <th>Job</th>
                 <th>Added</th>
                 <th>Fraud watch-list screening</th>
                 {canScreen && <th>Interview</th>}
@@ -819,9 +1156,20 @@ export default function Candidates() {
             <tbody>
               {candidates.map((c) => (
                 <tr key={c._id}>
-                  <td>{c.name || '—'}</td>
-                  <td>{c.email || '—'}</td>
-                  <td>{c.phone || '—'}</td>
+                  {canScreen ? (
+                    <>
+                      <EditableField candidate={c} field="name" onSaved={handleEdited} />
+                      <EditableField candidate={c} field="email" type="email" onSaved={handleEdited} />
+                      <EditableField candidate={c} field="phone" onSaved={handleEdited} />
+                    </>
+                  ) : (
+                    <>
+                      <td>{c.name || '—'}</td>
+                      <td>{c.email || '—'}</td>
+                      <td>{c.phone || '—'}</td>
+                    </>
+                  )}
+                  <td>{c.job?.title || '—'}</td>
                   <td>{new Date(c.createdAt).toLocaleDateString()}</td>
                   <ScreenResumeCell
                     candidate={c}
@@ -844,7 +1192,9 @@ export default function Candidates() {
           </table>
         )}
         {!loading && candidates.length === 0 && (
-          <p style={{ color: 'var(--muted)' }}>No candidates yet — click "+ New candidate" above.</p>
+          <p style={{ color: 'var(--muted)' }}>
+            {jobIdFilter ? 'No candidates for this job yet.' : 'No candidates yet — click "+ New candidate" above.'}
+          </p>
         )}
         {error && <p className="error-text">{error}</p>}
       </div>

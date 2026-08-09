@@ -67,14 +67,33 @@ const COLLECTIONS = [
     indexes: [{ key: { companyId: 1, normalizedName: 1 }, options: { unique: true } }],
   },
   {
+    name: 'jobs',
+    validator: {
+      $jsonSchema: {
+        bsonType: 'object',
+        required: ['title', 'description', 'companyId', 'createdBy'],
+        properties: {
+          title: { bsonType: 'string' },
+          description: { bsonType: 'string' },
+          status: { enum: ['open', 'closed'] },
+        },
+      },
+    },
+    indexes: [{ key: { companyId: 1, createdAt: -1 } }],
+  },
+  {
     name: 'candidates',
     validator: {
       $jsonSchema: {
         bsonType: 'object',
-        required: ['companyId', 'createdBy'],
+        required: ['companyId', 'createdBy', 'jobId'],
       },
     },
-    indexes: [{ key: { companyId: 1, createdAt: -1 } }, { key: { email: 1 } }],
+    indexes: [
+      { key: { companyId: 1, createdAt: -1 } },
+      { key: { companyId: 1, jobId: 1, createdAt: -1 } },
+      { key: { email: 1 } },
+    ],
   },
   {
     name: 'screenings',
