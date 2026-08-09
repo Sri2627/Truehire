@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const AuditLog = require('../models/AuditLog');
+const FraudCompany = require('../models/FraudCompany');
 
 function signTokens(user) {
   const payload = { id: user._id.toString(), role: user.role, companyId: user.companyId };
@@ -121,11 +122,20 @@ async function refresh(req, res) {
   }
 }
 
-// GET /auth/me - current user profile (requireAuth already ran).
+// GET /auth/me - current user profile (requireAuth already ran). Includes
+// the company name and a live fraud_companies count for that tenant, so
+// the frontend can show exactly which company/tenant this session belongs
+// to and whether its fraud list is actually populated - the two things
+// that are otherwise invisible when a scan mysteriously comes back with
+// 0 matches.
 async function me(req, res) {
-  const user = await User.findById(req.user.id).select('-passwordHash');
+  const user = await User.findById(req.user.id).select('-passwordHash').populate('companyId', 'name');
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(user);
+
+  const company = user.companyId; // populated { _id, name } or null if unset
+  const fraudListSize = company ? await FraudCompany.countDocuments({ companyId: company._id }) : 0;
+
+  res.json({ ...user.toObject(), company: company ? { id: company._id, name: company.name } : null, fraudListSize });
 }
 
 module.exports = { register, login, refresh, me };

@@ -100,15 +100,52 @@ is needed locally.
 Log in with the seeded admin account, or call `POST /auth/register` to
 create more users with specific roles.
 
+## 3. Resume upload + fraud watch-list screening
+
+Ported from the standalone **ProfileXRay** tool, and — like ProfileXRay —
+the resume is required up front: you register a candidate *with* their
+resume, and the verdict comes back as part of registration, not as a
+separate later step. The resume (PDF or DOCX) is checked line-by-line for
+an **exact match** (case-insensitive, whitespace/punctuation/legal-suffix
+normalized — see `utils/normalizeCompanyName.js`) against the
+`fraud_companies` watch-list — the same rule ProfileXRay's browser version
+used, now run server-side and persisted per candidate.
+
+- `POST /candidates` — multipart, fields `name`/`email`/`phone` + a
+  required `resume` file (PDF or DOCX, 10MB max). Creates the candidate,
+  immediately extracts and screens the resume in the same request, and
+  rolls the candidate record back if screening fails (never leaves an
+  unscreened orphan). Returns `{ candidate, screening }`.
+- `POST /candidates/:id/screen` — re-screen an existing candidate with a
+  new/updated resume file. Same extraction + matching path.
+- `GET /candidates/:id/screenings` — screening history for a candidate,
+  most recent first.
+- `GET /candidates` includes each candidate's `latestScreening`
+  (verdict, matches, and `fraudListSize` — how many watch-list entries
+  that particular scan ran against) so the list view can show an
+  accurate badge without a second call, and so a scan that ran against
+  an empty/unseeded list still reads as such after a refresh.
+- Uploaded files are saved to `backend/uploads/` (gitignored) — swap
+  `middleware/upload.js`'s disk storage for S3/GCS-backed storage before
+  production use.
+
+In the frontend, the **Candidates** page's "Register a candidate" form
+requires a resume file and shows the verdict immediately in a result
+panel (verdict, matched fraud entries, or a warning if the fraud list
+was empty when the scan ran) — plus a scanning overlay while the request
+is in flight. Each row also has a "Re-screen" control for updating an
+existing candidate's resume later.
+
 ## What's scaffolded vs. what's next
 
 Built now: JWT auth (login/refresh/me), role-protected candidate CRUD,
-role-protected team management, the DB init/seed script, and a React
-shell (login, dashboard, candidates list + add form, team & roles page
-with role dropdown — visible only to admins).
+role-protected team management, the DB init/seed script, resume upload +
+fraud watch-list screening at registration time (above), and a React
+shell (login, dashboard, candidates list + register-with-resume form +
+re-screening, team & roles page with role dropdown — visible only to
+admins).
 
 Not yet built (present in the original spec, not requested in this pass):
-OTP sign-in, resume upload + parsing, fraud watch-list matching engine,
-UAN/employment overlap check, interview-invite drafting, audit log UI,
-reports/export. The Mongo schemas and audit_log collection are already in
-place for these — the models are in `backend/models/`.
+OTP sign-in, UAN/employment overlap check, interview-invite drafting,
+audit log UI, reports/export. The Mongo schemas and audit_log collection
+are already in place for these — the models are in `backend/models/`.

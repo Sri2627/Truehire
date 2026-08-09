@@ -18,6 +18,11 @@ const screeningSchema = new mongoose.Schema(
         endDate: Date,
       },
     ],
+    // How many fraud_companies entries this scan actually ran against.
+    // Persisted (not just returned once) so a "clear" verdict from a scan
+    // that ran against an empty/unseeded list still reads as such after
+    // a page refresh, instead of looking identical to a real clear.
+    fraudListSize: { type: Number, default: 0 },
     screenedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     overrideBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     overrideReason: { type: String },

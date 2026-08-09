@@ -4,9 +4,24 @@ const cors = require('cors');
 const morgan = require('morgan');
 const { connectDB } = require('./config/db');
 
+// Register every Mongoose model up front. Requiring a model file is what
+// calls mongoose.model(name, schema) - if a model is only ever required
+// indirectly (e.g. via a script that isn't part of the normal server
+// boot path), any .populate() against a ref to it throws
+// "Schema hasn't been registered for model ..." the first time it's used.
+require('./models/Company');
+require('./models/User');
+require('./models/FraudCompany');
+require('./models/Candidate');
+require('./models/Screening');
+require('./models/AuditLog');
+require('./models/InterviewInvite');
+
 const authRoutes = require('./routes/authRoutes');
 const candidateRoutes = require('./routes/candidateRoutes');
 const teamRoutes = require('./routes/teamRoutes');
+const fraudRoutes = require('./routes/fraudRoutes');
+const interviewRoutes = require('./routes/interviewRoutes');
 
 const app = express();
 
@@ -18,7 +33,9 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.use('/auth', authRoutes);
 app.use('/candidates', candidateRoutes);
+app.use('/candidates/:id/interviews', interviewRoutes);
 app.use('/team', teamRoutes);
+app.use('/fraud', fraudRoutes);
 
 // Fallback error handler
 app.use((err, req, res, next) => {

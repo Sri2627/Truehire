@@ -17,21 +17,31 @@ export default function Dashboard() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Screening isn't wired up yet, so every candidate on file counts as
-  // "in progress" until POST /candidates/:id/screen is built. Real counts
-  // once that lands - not placeholders dressed up as data.
+  // GET /candidates includes each candidate's latestScreening (see
+  // routes/candidateRoutes.js), so these are real counts from the fraud
+  // watch-list scan - not placeholders.
   const total = candidates.length;
-  const verified = 0;
-  const flagged = 0;
-  const inProgress = total;
+  const verified = candidates.filter((c) => c.latestScreening?.verdict === 'clear').length;
+  const flagged = candidates.filter((c) => c.latestScreening?.verdict === 'flagged').length;
+  const inProgress = total - verified - flagged; // added but not screened yet
 
   const segments = [
     { label: 'Verified', value: verified, color: '#7c5cff' },
-    { label: 'In progress', value: inProgress || (total === 0 ? 1 : 0), color: '#4f8cff' },
+    { label: 'In progress', value: inProgress, color: '#4f8cff' },
     { label: 'Flagged', value: flagged, color: '#f2596b' },
   ];
 
   const pct = (v) => (total ? Math.round((v / total) * 100) : 0);
+
+  // Recent activity: prefer candidates with a screening timestamp, most
+  // recent first, falling back to "added" for anyone not screened yet.
+  const recent = [...candidates]
+    .sort((a, b) => {
+      const at = new Date(a.latestScreening?.screenedAt || a.createdAt);
+      const bt = new Date(b.latestScreening?.screenedAt || b.createdAt);
+      return bt - at;
+    })
+    .slice(0, 5);
 
   return (
     <Layout>
@@ -92,13 +102,25 @@ export default function Dashboard() {
               Nothing yet. New candidates will show up here as they're added.
             </p>
           ) : (
-            candidates.slice(0, 5).map((c) => (
-              <div className="activity-item" key={c._id}>
-                <span className="name">{c.name || 'Unnamed candidate'}</span>
-                <span className="detail">Added to candidates</span>
-                <span className="time">{new Date(c.createdAt).toLocaleString()}</span>
-              </div>
-            ))
+            recent.map((c) => {
+              const verdict = c.latestScreening?.verdict;
+              const detail = verdict
+                ? verdict === 'flagged'
+                  ? `Resume flagged - matched ${c.latestScreening.fraudMatches?.length || 0} fraud watch-list entr${(c.latestScreening.fraudMatches?.length || 0) === 1 ? 'y' : 'ies'}`
+                  : 'Resume screened - no fraud watch-list match'
+                : 'Added to candidates';
+              const when = c.latestScreening?.screenedAt || c.createdAt;
+              return (
+                <div className="activity-item" key={c._id}>
+                  <span className="name">
+                    {c.name || 'Unnamed candidate'}
+                    {verdict && <span className={`badge ${verdict}`} style={{ marginLeft: 8 }}>{verdict}</span>}
+                  </span>
+                  <span className="detail">{detail}</span>
+                  <span className="time">{new Date(when).toLocaleString()}</span>
+                </div>
+              );
+            })
           )}
         </div>
       </div>

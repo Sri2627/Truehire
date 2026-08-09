@@ -6,10 +6,12 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Lets the React dev server call /auth, /candidates, /team without CORS pain.
+      // Lets the React dev server call /auth, /candidates, /team, /fraud
+      // without CORS pain.
       '/auth': 'http://localhost:5000',
       '/candidates': 'http://localhost:5000',
       '/team': 'http://localhost:5000',
+      '/fraud': 'http://localhost:5000',
     },
   },
 });

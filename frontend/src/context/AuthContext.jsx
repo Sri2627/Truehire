@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import api from '../api';
 
 const AuthContext = createContext(null);
@@ -24,6 +24,19 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('th_user');
     setUser(null);
   }
+
+  // api.js clears localStorage itself when a token refresh fails (it's a
+  // plain module, not a component - it can't call setUser directly), then
+  // fires this event so this state actually catches up. Without it, the
+  // UI keeps thinking you're logged in and every request keeps failing
+  // with "Missing or malformed Authorization header".
+  useEffect(() => {
+    function handleSessionExpired() {
+      setUser(null);
+    }
+    window.addEventListener('th:session-expired', handleSessionExpired);
+    return () => window.removeEventListener('th:session-expired', handleSessionExpired);
+  }, []);
 
   // role helper - e.g. hasRole('admin') or hasRole('admin', 'recruiter')
   function hasRole(...roles) {

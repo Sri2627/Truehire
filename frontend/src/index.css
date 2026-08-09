@@ -1,17 +1,17 @@
 :root {
-  --ink: #eef1fa;
-  --paper: #0a0d16;
-  --panel: #10141f;
-  --panel-2: #141926;
-  --line: #232a3d;
-  --line-soft: #1a2032;
+  --ink: #1a1f2e;
+  --paper: #f5f6fa;
+  --panel: #ffffff;
+  --panel-2: #eef0f6;
+  --line: #dde1ec;
+  --line-soft: #e8eaf2;
   --purple: #7c5cff;
   --blue: #4f8cff;
   --grad: linear-gradient(90deg, var(--purple), var(--blue));
-  --success: #33d69f;
-  --danger: #f2596b;
-  --warning: #f5b942;
-  --muted: #8890a8;
+  --success: #1f9c73;
+  --danger: #d63a51;
+  --warning: #b8790a;
+  --muted: #676e85;
   font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
@@ -68,13 +68,13 @@ body {
 
 .sidebar a.active {
   background: var(--panel-2);
-  color: #fff;
+  color: var(--ink);
   box-shadow: inset 3px 0 0 var(--purple);
 }
 
 .sidebar a:hover, .sidebar button:hover {
   background: var(--panel-2);
-  color: #fff;
+  color: var(--ink);
 }
 
 .main {
@@ -273,3 +273,65 @@ th { color: var(--muted); font-weight: 500; font-size: 0.8rem; }
 .activity-item .name { font-weight: 600; font-size: 0.88rem; }
 .activity-item .detail { font-size: 0.8rem; color: var(--muted); }
 .activity-item .time { font-size: 0.74rem; color: var(--muted); margin-top: 2px; }
+
+.scanning-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(6, 8, 14, 0.72);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 999;
+}
+
+.scanning-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 32px 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  min-width: 260px;
+}
+
+.spinner {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid var(--line);
+  border-top-color: var(--blue);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.scanning-title {
+  font-weight: 600;
+  margin: 0;
+}
+
+.scanning-stage {
+  color: var(--muted);
+  font-size: 0.84rem;
+  margin: 0;
+}
+
+.scan-result {
+  border-width: 1px;
+  border-style: solid;
+}
+
+.scan-result-flagged {
+  border-color: var(--danger);
+  background: rgba(242, 89, 107, 0.08);
+}
+
+.scan-result-clear {
+  border-color: var(--success);
+  background: rgba(51, 214, 159, 0.06);
+}

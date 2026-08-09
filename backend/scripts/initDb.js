@@ -128,17 +128,41 @@ async function ensureCollection(db, { name, validator, indexes }) {
   const existing = await db.listCollections({ name }).toArray();
 
   if (existing.length === 0) {
-    await db.createCollection(name, { validator });
-    console.log(`  + created collection "${name}"`);
+    try {
+      await db.createCollection(name, { validator });
+      console.log(`  + created collection "${name}"`);
+    } catch (err) {
+      console.warn(`  ! couldn't create "${name}" with a validator (${err.codeName || err.code}: ${err.message})`);
+      try {
+        await db.createCollection(name);
+        console.log(`  + created collection "${name}" (without schema validation)`);
+      } catch (err2) {
+        if (err2.codeName !== 'NamespaceExists') throw err2;
+      }
+    }
   } else {
-    // Collection exists already (e.g. re-running the script) - update the
-    // validator in place so schema changes still take effect.
-    await db.command({ collMod: name, validator });
-    console.log(`  = collection "${name}" already exists, validator refreshed`);
+    // Collection exists already (e.g. re-running the script) - try to
+    // refresh the validator, but this needs the dbAdmin role on Atlas.
+    // A restricted "readWrite" user can't collMod - that's fine, schema
+    // validation is a nice-to-have, not required for the app to work.
+    try {
+      await db.command({ collMod: name, validator });
+      console.log(`  = collection "${name}" already exists, validator refreshed`);
+    } catch (err) {
+      console.warn(
+        `  ! collection "${name}" exists but couldn't refresh its validator ` +
+        `(${err.codeName || err.code}: ${err.message}) - likely missing the dbAdmin role ` +
+        `on this Atlas user. Skipping; the app works fine without it.`
+      );
+    }
   }
 
   for (const idx of indexes) {
-    await db.collection(name).createIndex(idx.key, idx.options || {});
+    try {
+      await db.collection(name).createIndex(idx.key, idx.options || {});
+    } catch (err) {
+      console.warn(`  ! couldn't create index ${JSON.stringify(idx.key)} on "${name}": ${err.message}`);
+    }
   }
   if (indexes.length) {
     console.log(`    indexes ensured on "${name}": ${indexes.map((i) => JSON.stringify(i.key)).join(', ')}`);

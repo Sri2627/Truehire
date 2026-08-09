@@ -30,7 +30,19 @@ api.interceptors.response.use(
           localStorage.removeItem('th_access_token');
           localStorage.removeItem('th_refresh_token');
           localStorage.removeItem('th_user');
+          // Tell AuthContext (a separate React tree - this module can't
+          // call its setUser directly) that the session is dead, so the
+          // UI actually redirects to /login instead of silently staying
+          // "logged in" and re-sending every request with no token.
+          window.dispatchEvent(new Event('th:session-expired'));
         }
+      } else {
+        // No refresh token to even try (cleared by another tab, wiped
+        // manually, or never issued) - same dead-session situation, so
+        // the same cleanup + redirect applies.
+        localStorage.removeItem('th_access_token');
+        localStorage.removeItem('th_user');
+        window.dispatchEvent(new Event('th:session-expired'));
       }
     }
     return Promise.reject(error);

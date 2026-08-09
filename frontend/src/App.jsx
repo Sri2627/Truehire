@@ -4,6 +4,7 @@ import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Candidates from './pages/Candidates.jsx';
 import Team from './pages/Team.jsx';
+import FraudList from './pages/FraudList.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 
 export default function App() {
@@ -34,6 +35,15 @@ export default function App() {
         element={
           <ProtectedRoute roles={['admin']}>
             <Team />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/fraud"
+        element={
+          <ProtectedRoute roles={['admin']}>
+            <FraudList />
           </ProtectedRoute>
         }
       />
