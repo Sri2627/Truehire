@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import api from '../api';
-
+import Logo from "../assets/Logoth.png";
 export default function Layout({ children }) {
   const { user, logout, hasRole } = useAuth();
   const navigate = useNavigate();
@@ -30,8 +30,8 @@ export default function Layout({ children }) {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">
-          True <span className="accent">Hire</span>
-        </div>
+ 
+<img src={Logo} alt="True Hire Logo" className="logo" style={{ width: "180px", height: "auto" }}/>        </div>
         <NavLink to="/dashboard" className={({ isActive }) => (isActive ? 'active' : '')}>
           Dashboard
         </NavLink>

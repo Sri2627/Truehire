@@ -1,14 +1,24 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // If api.js redirected us here because a token refresh failed, it left
+  // this flag behind so we can tell the user *why* they're back at the
+  // login screen instead of just showing an empty form.
+  const [sessionExpired] = useState(() => {
+    const expired = sessionStorage.getItem('th_session_expired') === '1';
+    if (expired) sessionStorage.removeItem('th_session_expired');
+    return expired;
+  });
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -16,7 +26,11 @@ export default function Login() {
     setLoading(true);
     try {
       await login(identifier, password);
-      navigate('/dashboard');
+      // Send them back to the page they were on when the session died,
+      // falling back to the dashboard for a fresh/normal login.
+      const dest = location.state?.from;
+      const path = dest ? `${dest.pathname}${dest.search || ''}` : '/dashboard';
+      navigate(path, { replace: true });
     } catch (err) {
       setError(err.response?.data?.error || 'Login failed');
     } finally {
@@ -36,6 +50,12 @@ export default function Login() {
           }}>Hire</span>
         </h1>
         <p className="sub">Sign in with your work email or mobile</p>
+
+        {sessionExpired && (
+          <p className="error-text" role="alert">
+            Your session expired. Please sign in again.
+          </p>
+        )}
 
         <label htmlFor="identifier">Email or mobile</label>
         <input

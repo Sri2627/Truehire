@@ -3,6 +3,8 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import Login from './pages/Login.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Jobs from './pages/Jobs.jsx';
+import JobDetails from './pages/JobDetails.jsx';
+import JobMatches from './pages/JobMatches.jsx';
 import Candidates from './pages/Candidates.jsx';
 import Team from './pages/Team.jsx';
 import FraudList from './pages/FraudList.jsx';
@@ -27,6 +29,24 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Jobs />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/jobs/:id"
+        element={
+          <ProtectedRoute>
+            <JobDetails />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/jobs/:id/matches"
+        element={
+          <ProtectedRoute>
+            <JobMatches />
           </ProtectedRoute>
         }
       />

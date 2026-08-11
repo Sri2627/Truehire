@@ -2,12 +2,31 @@ const express = require('express');
 const mongoose = require('mongoose');
 const Job = require('../models/Job');
 const Candidate = require('../models/Candidate');
+const Screening = require('../models/Screening');
 const AuditLog = require('../models/AuditLog');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { computeMatchScore } = require('../utils/jobMatching');
 
 const router = express.Router();
 
 router.use(requireAuth);
+
+// Shared by POST / and PATCH /:id - turns a raw requiredSkills array from
+// the request body into the { name, weight, minYears } shape the schema
+// expects, or throws a string error message if it's malformed.
+function cleanRequiredSkills(requiredSkills) {
+  if (!Array.isArray(requiredSkills)) {
+    throw 'requiredSkills must be an array of { name, weight, minYears }';
+  }
+  for (const s of requiredSkills) {
+    if (!s.name || !s.name.trim()) throw 'Every required skill needs a name';
+  }
+  return requiredSkills.map((s) => ({
+    name: s.name.trim(),
+    weight: s.weight == null || s.weight === '' ? 10 : Number(s.weight),
+    minYears: s.minYears == null || s.minYears === '' ? 0 : Number(s.minYears),
+  }));
+}
 
 // GET /jobs - list job postings for the caller's company, each annotated
 // with how many candidates have been registered against it (so the list
@@ -67,16 +86,84 @@ router.get('/:id', requireRole('admin', 'recruiter', 'viewer'), async (req, res)
   res.json({ ...job.toObject(), candidateCount });
 });
 
-// POST /jobs - create a job posting (title + JD text). Candidates are
-// registered against one of these, so this has to exist first.
+// GET /jobs/:id/matches - ranks every candidate registered against this
+// job by a deterministic 0-100 match score (utils/jobMatching.js): weighted
+// required skills (using each candidate's stated-or-timeline-derived
+// years) plus optional overall experience. No AI - every number here
+// traces back to the job's stated requirements and the candidate's
+// stored skills, with a per-candidate matched/missing/exceeding
+// breakdown alongside the score. Requires the job to have at least one
+// required skill configured.
+router.get('/:id/matches', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+  const job = await Job.findOne({ _id: req.params.id, companyId: req.user.companyId });
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  if (!job.requiredSkills || job.requiredSkills.length === 0) {
+    return res.status(400).json({ error: 'Add required skills to this job before ranking candidates against it' });
+  }
+
+  const candidates = await Candidate.find({ jobId: job._id, companyId: req.user.companyId });
+
+  // Latest screening per candidate, so a flagged (possible-fraud) resume
+  // never shows up in a ranking meant to help pick who to move forward
+  // with. Candidates who haven't been screened yet still show (there's
+  // nothing to hide there) - only a confirmed "flagged" verdict excludes.
+  const screenings = await Screening.find({ candidateId: { $in: candidates.map((c) => c._id) } }).sort({ screenedAt: -1 });
+  const latestScreeningByCandidate = new Map();
+  for (const s of screenings) {
+    const key = String(s.candidateId);
+    if (!latestScreeningByCandidate.has(key)) latestScreeningByCandidate.set(key, s);
+  }
+
+  const ranked = candidates
+    .filter((c) => latestScreeningByCandidate.get(String(c._id))?.verdict !== 'flagged')
+    .map((c) => {
+      const latestScreening = latestScreeningByCandidate.get(String(c._id));
+      return {
+        candidate: {
+          _id: c._id,
+          name: c.name,
+          email: c.email,
+          phone: c.phone,
+          skills: c.skills,
+          totalYearsExperience: c.totalYearsExperience,
+          careerFlags: c.careerFlags,
+          screeningVerdict: latestScreening?.verdict || null,
+        },
+        ...computeMatchScore(job, c),
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  res.json({
+    job: { _id: job._id, title: job.title, requiredSkills: job.requiredSkills, minExperienceYears: job.minExperienceYears },
+    ranked,
+  });
+});
+
+// POST /jobs - create a job posting (title + JD text, plus optional
+// requiredSkills / minExperienceYears used by the matching engine above).
+// Candidates are registered against one of these, so this has to exist
+// first.
 router.post('/', requireRole('admin', 'recruiter'), async (req, res) => {
-  const { title, description } = req.body;
+  const { title, description, requiredSkills, minExperienceYears } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'A job title is required' });
   if (!description || !description.trim()) return res.status(400).json({ error: 'A job description is required' });
+
+  let cleanedSkills = [];
+  if (requiredSkills !== undefined) {
+    try {
+      cleanedSkills = cleanRequiredSkills(requiredSkills);
+    } catch (msg) {
+      return res.status(400).json({ error: msg });
+    }
+  }
 
   const job = await Job.create({
     title: title.trim(),
     description: description.trim(),
+    requiredSkills: cleanedSkills,
+    minExperienceYears: minExperienceYears === '' || minExperienceYears == null ? undefined : Number(minExperienceYears),
     companyId: req.user.companyId,
     createdBy: req.user.id,
   });
@@ -86,10 +173,64 @@ router.post('/', requireRole('admin', 'recruiter'), async (req, res) => {
     action: 'create_job',
     entityType: 'job',
     entityId: job._id,
-    metadata: { title: job.title },
+    metadata: { title: job.title, requiredSkillCount: cleanedSkills.length },
   });
 
   res.status(201).json(job);
+});
+
+// PATCH /jobs/:id - edit a job posting's title, description, required
+// skills, and/or minimum experience. Only fields present in the body are
+// touched, so this doubles as both "edit everything" and "just tweak the
+// required skills" without a separate endpoint for each. Status has its
+// own dedicated route below since it's a one-click toggle, not a form.
+router.patch('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
+  const job = await Job.findOne({ _id: req.params.id, companyId: req.user.companyId });
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  const { title, description, requiredSkills, minExperienceYears } = req.body;
+  const update = {};
+
+  if (title !== undefined) {
+    if (!title.trim()) return res.status(400).json({ error: 'A job title is required' });
+    update.title = title.trim();
+  }
+
+  if (description !== undefined) {
+    if (!description.trim()) return res.status(400).json({ error: 'A job description is required' });
+    update.description = description.trim();
+  }
+
+  if (requiredSkills !== undefined) {
+    try {
+      update.requiredSkills = cleanRequiredSkills(requiredSkills);
+    } catch (msg) {
+      return res.status(400).json({ error: msg });
+    }
+  }
+
+  if (minExperienceYears !== undefined) {
+    update.minExperienceYears = minExperienceYears === '' || minExperienceYears == null ? undefined : Number(minExperienceYears);
+  }
+
+  Object.assign(job, update);
+  // minExperienceYears needs an explicit unset when cleared to '' - a
+  // plain assign leaves the old value in place under Mongoose because
+  // `undefined` is treated as "don't touch this key", not "clear it".
+  if (minExperienceYears === '' || minExperienceYears === null) {
+    job.minExperienceYears = undefined;
+  }
+  await job.save();
+
+  await AuditLog.create({
+    userId: req.user.id,
+    action: 'edit_job',
+    entityType: 'job',
+    entityId: job._id,
+    metadata: { fields: Object.keys(update) },
+  });
+
+  res.json(job);
 });
 
 // PATCH /jobs/:id/status - open/close a posting.

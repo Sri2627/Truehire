@@ -136,16 +136,75 @@ was empty when the scan ran) — plus a scanning overlay while the request
 is in flight. Each row also has a "Re-screen" control for updating an
 existing candidate's resume later.
 
+## 4. Job matching, ranking, and deterministic career checks
+
+`POST /jobs` now accepts optional `requiredSkills` (`{ name, weight,
+minYears }`) and `minExperienceYears`. Once a job has required skills set,
+`GET /jobs/:id/matches` ranks every candidate registered against it by a
+0-100 score (`utils/jobMatching.js`) with a per-candidate breakdown
+(matched / missing / exceeding) - pure arithmetic, no AI, every number
+traceable to the job's stated requirements.
+
+The skill-years problem: most real resumes list skills as a flat block
+with no years attached anywhere ("React, TypeScript, AWS, Node.js"), so
+there's nothing to score against. Two new modules solve this without an
+LLM call:
+
+- `utils/skillExtraction.js` - dictionary presence check (does the resume
+  mention this skill at all) plus a regex for the few resumes that *do*
+  state "N years of X" explicitly.
+- `utils/timelineExtraction.js` - for everything else, derives years from
+  the resume's own dated Experience section: parses date ranges
+  ("08/2025 - Current", "Jan 2022 – Present", etc.) into role segments,
+  finds the earliest segment that mentions a given skill, and computes
+  years as (now − that segment's start date), capped by how long the
+  technology has existed (`utils/techReleaseYears.js`). Total experience
+  is derived the same way, from the single earliest role. Verified against
+  a real resume with a flat skills list: every skill correctly extracted
+  with `years: null` from the flat list, then correctly backfilled (e.g.
+  ~4.4 yrs for a skill first named in a 2022-dated role) from the
+  Experience section - a 98% match score against a realistic job posting,
+  end to end.
+- Stated years always win over derived ones when both exist. Recruiters
+  can override anything via `PATCH /candidates/:id` (`skills`,
+  `totalYearsExperience`), which is stamped `source: 'manual'`.
+
+Two more checks reuse the same date segments, fully deterministic:
+
+- `utils/careerChecks.js` → `detectEmploymentOverlaps` - flags overlapping
+  employment date ranges (the resume-derived version of the existing
+  manual UAN-overlap check, no manual data entry required).
+- `utils/careerChecks.js` → `detectUnrealisticGrowth` - flags a 2+
+  seniority-level jump (via a keyword-based title ranking) inside under
+  18 months, e.g. Fresher → Senior Architect → Director within a year.
+  Verified against both a clean real resume (no flags) and a synthetic
+  fresher-to-director-in-8-months resume (flags both jumps correctly).
+
+Both checks run automatically at registration/screening time and are
+stored on the candidate as `careerFlags` - advisory, shown to a
+recruiter, never an auto-rejection.
+
+**Deliberately not built here:** an LLM-based version of any of this. The
+whole app (fraud screening, job matching, career checks) is built so every
+number is traceable to a fixed rule, not a model's judgment call - a
+"Level 2" that asks an AI to directly judge fraud/growth realism would
+trade that away for cases these heuristics still miss (e.g. narrative
+prose with no clean date ranges). Flagging that as a real design decision
+this file doesn't resolve on its own, not an oversight.
+
 ## What's scaffolded vs. what's next
 
 Built now: JWT auth (login/refresh/me), role-protected candidate CRUD,
 role-protected team management, the DB init/seed script, resume upload +
-fraud watch-list screening at registration time (above), and a React
-shell (login, dashboard, candidates list + register-with-resume form +
-re-screening, team & roles page with role dropdown — visible only to
-admins).
+fraud watch-list screening at registration time, job matching/ranking with
+timeline-derived skill years, and deterministic employment-overlap /
+unrealistic-growth checks (all above) — plus a React shell (login,
+dashboard, candidates list + register-with-resume form + re-screening,
+team & roles page with role dropdown — visible only to admins).
 
 Not yet built (present in the original spec, not requested in this pass):
-OTP sign-in, UAN/employment overlap check, interview-invite drafting,
-audit log UI, reports/export. The Mongo schemas and audit_log collection
-are already in place for these — the models are in `backend/models/`.
+OTP sign-in, a frontend table/UI for the new `/jobs/:id/matches` ranking
+endpoint (the API is ready; nothing renders it yet), interview-invite
+drafting, audit log UI, reports/export. The Mongo schemas and audit_log
+collection are already in place for these — the models are in
+`backend/models/`.

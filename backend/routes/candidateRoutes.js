@@ -12,6 +12,9 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const { upload, UPLOAD_DIR } = require('../middleware/upload');
 const { extractResumeText } = require('../utils/extractResumeText');
 const { screenResumeText } = require('../utils/screenText');
+const { extractSkillsFromText, MASTER_SKILLS } = require('../utils/skillExtraction');
+const { deriveSkillYearsFromTimeline, deriveTotalExperience } = require('../utils/timelineExtraction');
+const { runCareerChecks } = require('../utils/careerChecks');
 
 const router = express.Router();
 
@@ -45,7 +48,9 @@ function guessEmailFromText(text) {
 
 // Shared by POST /candidates and POST /candidates/:id/screen: extracts the
 // uploaded resume's text, matches it against the caller's tenant fraud
-// list, and records a Screening. Returns the populated screening doc.
+// list, records a Screening, and derives skills/experience/career-flags
+// for job matching (utils/skillExtraction.js, utils/timelineExtraction.js,
+// utils/careerChecks.js). Returns the populated screening doc.
 async function runScreening({ candidate, file, userId, extractedText: preExtracted }) {
   const extractedText =
     preExtracted !== undefined ? preExtracted : await extractResumeText(fs.readFileSync(file.path), file.originalname);
@@ -53,8 +58,35 @@ async function runScreening({ candidate, file, userId, extractedText: preExtract
   const fraudCompanies = await FraudCompany.find({ companyId: candidate.companyId });
   const { verdict, fraudMatches } = screenResumeText(extractedText, fraudCompanies);
 
+  // Skills: dictionary presence + any explicitly stated years, merged with
+  // timeline-derived years for everything the resume didn't state a
+  // number for. Stated years (if the resume actually says "5 years of
+  // React") win over derived ones - that's the more direct claim.
+  const stated = extractSkillsFromText(extractedText);
+  const derivedByName = new Map(deriveSkillYearsFromTimeline(extractedText, MASTER_SKILLS).map((s) => [s.name, s]));
+
+  const skills = stated.map((s) => {
+    if (s.years != null) return { name: s.name, years: s.years, source: 'stated' };
+    const derived = derivedByName.get(s.name);
+    if (derived) return { name: s.name, years: derived.years, source: 'timeline_derived' };
+    return { name: s.name, years: null, source: null };
+  });
+
+  const totalYearsExperience = deriveTotalExperience(extractedText);
+  const { overlaps, growthFlags } = runCareerChecks(extractedText);
+  const careerFlags = [
+    ...overlaps.map((detail) => ({ type: 'employment_overlap', detail })),
+    ...growthFlags.map((detail) => ({ type: 'unrealistic_growth', detail })),
+  ];
+
   candidate.extractedText = extractedText;
   candidate.resumeFileKey = file.filename;
+  candidate.skills = skills;
+  if (totalYearsExperience != null) {
+    candidate.totalYearsExperience = totalYearsExperience;
+    candidate.totalYearsExperienceSource = 'timeline_derived';
+  }
+  candidate.careerFlags = careerFlags;
   await candidate.save();
 
   const screening = await Screening.create({
@@ -70,7 +102,14 @@ async function runScreening({ candidate, file, userId, extractedText: preExtract
     action: 'upload_resume',
     entityType: 'candidate',
     entityId: candidate._id,
-    metadata: { verdict, matchCount: fraudMatches.length, fraudListSize: fraudCompanies.length, fileName: file.originalname },
+    metadata: {
+      verdict,
+      matchCount: fraudMatches.length,
+      fraudListSize: fraudCompanies.length,
+      fileName: file.originalname,
+      skillCount: skills.length,
+      careerFlagCount: careerFlags.length,
+    },
   });
 
   return screening.populate('fraudMatches.fraudCompanyId', 'name');
@@ -355,19 +394,36 @@ router.get('/:id/screenings', requireRole('admin', 'recruiter', 'viewer'), async
   res.json(screenings);
 });
 
-// PATCH /candidates/:id - edit name/email/phone. Primarily for cleaning up
-// the guessed name/email that bulk resume upload produces (guessed from
-// file name / resume text), but works for single-registered candidates
-// too. Only these three fields are editable here - resume, job, and
-// screening history go through their own dedicated routes.
+// PATCH /candidates/:id - edit name/email/phone, or correct the
+// auto-extracted skills/totalYearsExperience (recruiter override - marks
+// edited entries source: 'manual' so it's clear they're no longer the
+// machine's guess). Resume, job, and screening history go through their
+// own dedicated routes.
 router.patch('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
   const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
   if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
 
-  const { name, email, phone } = req.body;
+  const { name, email, phone, skills, totalYearsExperience } = req.body;
   if (name !== undefined) candidate.name = name;
   if (email !== undefined) candidate.email = email;
   if (phone !== undefined) candidate.phone = phone;
+
+  if (skills !== undefined) {
+    if (!Array.isArray(skills)) return res.status(400).json({ error: 'skills must be an array of { name, years }' });
+    for (const s of skills) {
+      if (!s.name || !s.name.trim()) return res.status(400).json({ error: 'Every skill needs a name' });
+    }
+    candidate.skills = skills.map((s) => ({
+      name: s.name.trim(),
+      years: s.years == null || s.years === '' ? undefined : Number(s.years),
+      source: 'manual',
+    }));
+  }
+
+  if (totalYearsExperience !== undefined) {
+    candidate.totalYearsExperience = totalYearsExperience === '' || totalYearsExperience == null ? undefined : Number(totalYearsExperience);
+    candidate.totalYearsExperienceSource = candidate.totalYearsExperience == null ? undefined : 'manual';
+  }
 
   try {
     await candidate.save();

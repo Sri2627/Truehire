@@ -2,6 +2,15 @@ import axios from 'axios';
 
 const api = axios.create({ baseURL: '/' });
 
+// Flag Login.jsx reads (and clears) so it can show "your session expired"
+// instead of a blank sign-in form. sessionStorage (not React state) because
+// this module has no component tree of its own and the flag needs to
+// survive the redirect that's about to happen.
+function announceSessionExpired() {
+  sessionStorage.setItem('th_session_expired', '1');
+  window.dispatchEvent(new Event('th:session-expired'));
+}
+
 // Attach the stored access token to every request automatically.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('th_access_token');
@@ -34,7 +43,7 @@ api.interceptors.response.use(
           // call its setUser directly) that the session is dead, so the
           // UI actually redirects to /login instead of silently staying
           // "logged in" and re-sending every request with no token.
-          window.dispatchEvent(new Event('th:session-expired'));
+          announceSessionExpired();
         }
       } else {
         // No refresh token to even try (cleared by another tab, wiped
@@ -42,7 +51,7 @@ api.interceptors.response.use(
         // the same cleanup + redirect applies.
         localStorage.removeItem('th_access_token');
         localStorage.removeItem('th_user');
-        window.dispatchEvent(new Event('th:session-expired'));
+        announceSessionExpired();
       }
     }
     return Promise.reject(error);

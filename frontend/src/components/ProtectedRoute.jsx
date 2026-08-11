@@ -1,5 +1,5 @@
 import React from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 
 // Wrap any page in <ProtectedRoute roles={['admin']}> to require both a
@@ -8,9 +8,12 @@ import { useAuth } from '../context/AuthContext.jsx';
 // can see.
 export default function ProtectedRoute({ children, roles }) {
   const { user } = useAuth();
+  const location = useLocation();
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    // Carry the page they were on so Login can send them right back after
+    // they sign in again, instead of always dumping them on /dashboard.
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   if (roles && !roles.includes(user.role)) {

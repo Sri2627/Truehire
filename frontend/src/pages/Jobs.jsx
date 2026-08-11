@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
 import Pagination from '../components/Pagination.jsx';
+import JobFormFields from '../components/JobForm.jsx';
 import api from '../api';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -10,16 +11,28 @@ import { useAuth } from '../context/AuthContext.jsx';
 // submit, close. Keeps the Jobs page itself to just a list + a button,
 // instead of an always-open form taking up space above the table.
 function NewJobModal({ onClose, onCreated }) {
-  const [form, setForm] = useState({ title: '', description: '' });
+  const [form, setForm] = useState({ title: '', description: '', minExperienceYears: '' });
+  const [skills, setSkills] = useState([]);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
   async function handleAdd(e) {
     e.preventDefault();
     setError('');
+
+    for (const s of skills) {
+      if (!s.name.trim()) {
+        setError('Every required skill needs a name (or remove the empty row)');
+        return;
+      }
+    }
+
     setSubmitting(true);
     try {
-      await api.post('/jobs', form);
+      await api.post('/jobs', {
+        ...form,
+        requiredSkills: skills.map((s) => ({ name: s.name, weight: s.weight, minYears: s.minYears })),
+      });
       onCreated();
       onClose();
     } catch (err) {
@@ -59,22 +72,7 @@ function NewJobModal({ onClose, onCreated }) {
 
         <h3 style={{ marginTop: 0, paddingRight: 28 }}>Create a job posting</h3>
         <form onSubmit={handleAdd}>
-          <label>Job title</label>
-          <input
-            value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
-            required
-            autoFocus
-          />
-
-          <label style={{ marginTop: 10 }}>Job description</label>
-          <textarea
-            rows={8}
-            value={form.description}
-            onChange={(e) => setForm({ ...form, description: e.target.value })}
-            required
-            placeholder="Responsibilities, requirements, etc."
-          />
+          <JobFormFields form={form} setForm={setForm} skills={skills} setSkills={setSkills} autoFocusTitle />
 
           {error && <p className="error-text">{error}</p>}
 
@@ -257,13 +255,16 @@ export default function Jobs() {
                 <th>Status</th>
                 <th>Candidates</th>
                 <th>Created</th>
+                <th>Matches</th>
                 {canManage && <th></th>}
               </tr>
             </thead>
             <tbody>
               {jobs.map((j) => (
                 <tr key={j._id}>
-                  <td>{j.title}</td>
+                  <td>
+                    <Link to={`/jobs/${j._id}`}>{j.title}</Link>
+                  </td>
                   <td style={{ maxWidth: 420, whiteSpace: 'pre-wrap' }}>
                     {j.description.length > 160 ? j.description.slice(0, 160) + '…' : j.description}
                   </td>
@@ -274,6 +275,11 @@ export default function Jobs() {
                     <Link to={`/candidates?jobId=${j._id}`}>{j.candidateCount ?? 0}</Link>
                   </td>
                   <td>{new Date(j.createdAt).toLocaleDateString()}</td>
+                  <td>
+                    <Link to={`/jobs/${j._id}/matches`} style={{ fontSize: '0.82rem' }}>
+                      View matches →
+                    </Link>
+                  </td>
                   {canManage && (
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
