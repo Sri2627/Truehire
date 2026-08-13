@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import Layout from '../components/Layout.jsx';
 import Pagination from '../components/Pagination.jsx';
 import api from '../api';
+import { useAuth } from '../context/AuthContext.jsx';
 
 // "Add a company to the watch-list" flow, in a popup - same pattern as the
 // job/candidate creation modals elsewhere in the app.
@@ -146,6 +147,11 @@ function DeleteEntryButton({ entry, onDeleted }) {
 }
 
 export default function FraudList() {
+  // Read-only for superadmin (browsing another institution's list) —
+  // adding/removing entries stays admin-only, matching the backend
+  // (routes/fraudRoutes.js POST/DELETE are requireRole('admin')).
+  const { hasRole } = useAuth();
+  const canManage = hasRole('admin');
   const [entries, setEntries] = useState([]);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -201,9 +207,11 @@ export default function FraudList() {
     <Layout>
       <div className="topbar">
         <h2>Fraud watch-list</h2>
-        <button className="btn-primary" onClick={() => setShowAddModal(true)} style={{ width: 180 }}>
-          + Add new company
-        </button>
+        {canManage && (
+          <button className="btn-primary" onClick={() => setShowAddModal(true)} style={{ width: 180 }}>
+            + Add new company
+          </button>
+        )}
       </div>
 
       {showAddModal && (
@@ -236,7 +244,7 @@ export default function FraudList() {
                 <th>Source</th>
                 <th>Added by</th>
                 <th>Added</th>
-                <th></th>
+                {canManage && <th></th>}
               </tr>
             </thead>
             <tbody>
@@ -246,7 +254,7 @@ export default function FraudList() {
                   <td>{entry.source === 'excel_upload' ? 'Excel upload' : 'Manual entry'}</td>
                   <td>{entry.addedBy?.name || '—'}</td>
                   <td>{new Date(entry.addedAt).toLocaleDateString()}</td>
-                  <DeleteEntryButton entry={entry} onDeleted={handleDeleted} />
+                  {canManage && <DeleteEntryButton entry={entry} onDeleted={handleDeleted} />}
                 </tr>
               ))}
             </tbody>
@@ -254,7 +262,11 @@ export default function FraudList() {
         )}
         {!loading && entries.length === 0 && (
           <p style={{ color: 'var(--muted)' }}>
-            {search ? 'No companies match your search.' : 'No companies on the watch-list yet — click "+ Add new company" above.'}
+            {search
+              ? 'No companies match your search.'
+              : canManage
+              ? 'No companies on the watch-list yet — click "+ Add new company" above.'
+              : 'No companies on this institution\u2019s watch-list yet.'}
           </p>
         )}
         {error && <p className="error-text">{error}</p>}

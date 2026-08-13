@@ -82,8 +82,67 @@ The API listens on `http://localhost:5000` (change `PORT` in `.env`).
 
 Every protected route checks the role **on the server**
 (`middleware/auth.js` → `requireAuth` + `requireRole(...)`), not just in
-the UI. Roles: `admin`, `recruiter`, `viewer` — matching the spec's
-Team & Roles screen.
+the UI. Roles: `superadmin`, `admin`, `recruiter`, `viewer` — the first
+three matching the spec's Team & Roles screen, plus a platform-level
+`superadmin` (see below).
+
+### Creating the platform superadmin
+
+`superadmin` is a platform-level role, not tied to any one institution
+(`companyId` is `null`). It's the account that lands on the
+Institutions screen and can see/add/suspend every institution and its
+fraud watch-list, rather than just its own tenant's. It's never handed
+out through the public signup/register forms — you create it once from
+the command line:
+
+```bash
+npm run create-superadmin you@platform.local YourPassword123
+# or with no args: uses SEED_SUPERADMIN_EMAIL / SEED_SUPERADMIN_PASSWORD
+# from .env, falling back to superadmin@truehire.local / ChangeMe123!
+```
+
+Safe to re-run — running it again on an existing email just checks it's
+already a superadmin.
+
+**Promoting an existing user instead of creating a new one:** if the
+email you pass already has an account (e.g. the default seeded admin,
+`admin@truehire.local`), the script promotes that user in place and
+leaves its existing password untouched. Just pass the email, no
+password:
+
+```bash
+npm run create-superadmin admin@truehire.local
+```
+
+Then log in with that same account's existing password.
+
+#### Why this doesn't need any special Atlas permissions
+
+The `users` collection on Atlas was likely created (by `init-db`, once,
+a while ago) with a server-side JSON-schema validator whose `role` enum
+only allows `['admin', 'recruiter', 'viewer']`. Properly fixing that
+validator needs the `dbAdmin` role, which a lot of Atlas database users
+— especially free-tier ones — don't have, and some don't even have the
+`bypassDocumentValidation` privilege either (an earlier version of this
+script depended on that and could still fail with `user is not allowed
+to do action [bypassDocumentValidation]`).
+
+So this script doesn't fight the validator at all: instead of ever
+writing `role: 'superadmin'`, it sets `role: 'admin'` (already
+schema-valid) plus a separate `isSuperAdmin: true` flag, which the
+validator has no opinion on and so doesn't reject. `authController.js`'s
+`effectiveRole()` is the one place that reconciles the two — everywhere
+else in the app (route guards, JWTs, the frontend) just keeps checking
+for `role === 'superadmin'` as if the flag didn't exist. No `dbAdmin`,
+no `bypassDocumentValidation`, no manual Atlas UI edits required.
+
+If an account was created with an older version of this script that did
+write `role: 'superadmin'` literally, re-running `create-superadmin` on
+that same email automatically migrates it onto the flag-based approach
+(you'll see a "Migrated ..." line) — worth doing, since a document with
+an invalid `role` value can otherwise fail on unrelated writes (login's
+`lastLoginAt` update, password reset, etc.) every time, under MongoDB's
+default `strict` validation level.
 
 ## 2. Frontend setup
 

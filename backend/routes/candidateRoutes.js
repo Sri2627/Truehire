@@ -2,17 +2,19 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
+const mammoth = require('mammoth');
 const Candidate = require('../models/Candidate');
 const Job = require('../models/Job');
 const FraudCompany = require('../models/FraudCompany');
 const Screening = require('../models/Screening');
 const UanRecord = require('../models/UanRecord');
 const AuditLog = require('../models/AuditLog');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, resolveCompanyScope } = require('../middleware/auth');
 const { upload, UPLOAD_DIR } = require('../middleware/upload');
 const { extractResumeText } = require('../utils/extractResumeText');
 const { screenResumeText } = require('../utils/screenText');
 const { extractSkillsFromText, MASTER_SKILLS } = require('../utils/skillExtraction');
+const { guessEmailFromText, guessPhoneFromText } = require('../utils/contactExtraction');
 const { deriveSkillYearsFromTimeline, deriveTotalExperience } = require('../utils/timelineExtraction');
 const { runCareerChecks } = require('../utils/careerChecks');
 
@@ -20,13 +22,16 @@ const router = express.Router();
 
 // All candidate routes require a valid JWT.
 router.use(requireAuth);
+// Resolves a superadmin's selected institution (x-company-id header) into
+// req.user.companyId so every `{ companyId: req.user.companyId }` query
+// below keeps working unchanged. No-op for normal tenant users.
+router.use(resolveCompanyScope);
 
-const EMAIL_RE = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
-
-// Bulk upload has no per-file name/email form fields (it's just a pile of
-// resumes), so best-effort-guess both: the email from the extracted resume
-// text, and the name from the file name (recruiters near-universally name
-// resume files after the candidate, e.g. "Jane_Doe_Resume.pdf").
+// Bulk upload has no per-file name/email/phone form fields (it's just a
+// pile of resumes), so best-effort-guess all three: the email/phone from
+// the extracted resume text, and the name from the file name (recruiters
+// near-universally name resume files after the candidate, e.g.
+// "Jane_Doe_Resume.pdf").
 function guessNameFromFilename(originalName) {
   const base = path.basename(originalName, path.extname(originalName));
   const cleaned = base
@@ -41,11 +46,6 @@ function guessNameFromFilename(originalName) {
     .join(' ');
 }
 
-function guessEmailFromText(text) {
-  const match = EMAIL_RE.exec(String(text || ''));
-  return match ? match[0] : undefined;
-}
-
 // Shared by POST /candidates and POST /candidates/:id/screen: extracts the
 // uploaded resume's text, matches it against the caller's tenant fraud
 // list, records a Screening, and derives skills/experience/career-flags
@@ -55,7 +55,15 @@ async function runScreening({ candidate, file, userId, extractedText: preExtract
   const extractedText =
     preExtracted !== undefined ? preExtracted : await extractResumeText(fs.readFileSync(file.path), file.originalname);
 
-  const fraudCompanies = await FraudCompany.find({ companyId: candidate.companyId });
+  // Checks the tenant's own manually-added entries PLUS the global,
+  // platform-wide fake-institutions list (companyId: null) - see
+  // models/FraudCompany.js. Without the $or here, a brand new tenant with
+  // no manual entries of its own would screen against nothing at all and
+  // every resume would come back "clear" for the wrong reason: not
+  // because it's clean, but because there was nothing to check it against.
+  const fraudCompanies = await FraudCompany.find({
+    $or: [{ companyId: candidate.companyId }, { companyId: null }],
+  });
   const { verdict, fraudMatches } = screenResumeText(extractedText, fraudCompanies);
 
   // Skills: dictionary presence + any explicitly stated years, merged with
@@ -123,7 +131,7 @@ async function runScreening({ candidate, file, userId, extractedText: preExtract
 // substring). Optional ?page=&limit= paginate the result (default 10/page,
 // max 100) - response is { items, total, page, limit, totalPages }.
 // admin, recruiter, and viewer can all read.
-router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+router.get('/', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
   const companyId = new mongoose.Types.ObjectId(req.user.companyId);
 
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -189,7 +197,7 @@ router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) =>
 // verified, flagged, in-progress) - computed server-side via aggregation
 // so the dashboard doesn't have to pull every candidate record just to
 // count them, now that the list itself is paginated.
-router.get('/stats', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+router.get('/stats', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
   const companyId = new mongoose.Types.ObjectId(req.user.companyId);
 
   const [result] = await Candidate.aggregate([
@@ -251,16 +259,22 @@ router.post('/', requireRole('admin', 'recruiter'), upload.single('resume'), asy
 
   let candidate;
   try {
+    // Extracted once up front (rather than letting runScreening extract it
+    // again below) so a name/email/phone left blank on the form can fall
+    // back to whatever's actually on the resume, the same way bulk upload
+    // already does. A value the recruiter did type always wins.
+    const extractedText = await extractResumeText(fs.readFileSync(req.file.path), req.file.originalname);
+
     candidate = await Candidate.create({
-      name,
-      email,
-      phone,
+      name: name || guessNameFromFilename(req.file.originalname),
+      email: email || guessEmailFromText(extractedText),
+      phone: phone || guessPhoneFromText(extractedText),
       jobId: job._id,
       companyId: req.user.companyId,
       createdBy: req.user.id,
     });
 
-    const screening = await runScreening({ candidate, file: req.file, userId: req.user.id });
+    const screening = await runScreening({ candidate, file: req.file, userId: req.user.id, extractedText });
     res.status(201).json({ candidate, screening });
   } catch (err) {
     if (req.file) fs.unlink(req.file.path, () => {});
@@ -309,6 +323,7 @@ router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', 
       candidate = await Candidate.create({
         name: guessNameFromFilename(file.originalname),
         email: guessEmailFromText(extractedText),
+        phone: guessPhoneFromText(extractedText),
         jobId: job._id,
         companyId: req.user.companyId,
         createdBy: req.user.id,
@@ -346,13 +361,85 @@ router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', 
 });
 
 // GET /candidates/:id - full candidate detail.
-router.get('/:id', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+router.get('/:id', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
   const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
   if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
   res.json(candidate);
 });
 
-// POST /candidates/:id/screen - upload/re-upload a resume (PDF/DOCX) for an
+// GET /candidates/:id/resume - streams the candidate's stored resume file
+// (PDF or DOCX, whatever was last uploaded/screened) back to the caller.
+// Same read roles as the rest of this file, including superadmin viewing
+// whichever institution it currently has selected. "inline" so a browser
+// tab renders a PDF directly instead of forcing a download, while DOCX
+// (which browsers can't render inline) still comes through with its real
+// file name for the OS to open.
+router.get('/:id/resume', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
+  const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
+  if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
+  if (!candidate.resumeFileKey) {
+    return res.status(404).json({ error: 'No resume has been uploaded for this candidate' });
+  }
+
+  const filePath = path.join(UPLOAD_DIR, candidate.resumeFileKey);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Resume file is missing from storage' });
+  }
+
+  const ext = path.extname(candidate.resumeFileKey).toLowerCase();
+  const downloadName = `${(candidate.name || 'resume').replace(/[^\w\- ]+/g, '').trim() || 'resume'}${ext}`;
+  const contentType = ext === '.pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `inline; filename="${downloadName}"`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
+// Very small allowlist-style sanitizer for mammoth's docx->HTML output,
+// used only by GET /:id/resume-preview below. mammoth doesn't carry over
+// <script>/<style> tags or event-handler attributes from a docx in the
+// first place, but resume files are user-uploaded, and this HTML gets
+// rendered with dangerouslySetInnerHTML on the frontend - so strip
+// anything script-capable defensively rather than trust that.
+function sanitizeResumeHtml(html) {
+  return html
+    .replace(/<\/?(script|style|iframe|object|embed|link|meta)\b[^>]*>/gi, '')
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '');
+}
+
+// GET /candidates/:id/resume-preview - for a DOCX resume, converts it to
+// HTML (via mammoth, already used for text extraction elsewhere in this
+// file) so the frontend can render an inline preview instead of forcing a
+// download. Not needed for PDFs - the browser can render those directly
+// from the /resume route's bytes in an <iframe>.
+router.get('/:id/resume-preview', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
+  const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
+  if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
+  if (!candidate.resumeFileKey) {
+    return res.status(404).json({ error: 'No resume has been uploaded for this candidate' });
+  }
+
+  const ext = path.extname(candidate.resumeFileKey).toLowerCase();
+  if (ext !== '.docx') {
+    return res.status(400).json({ error: 'HTML preview is only available for .docx resumes — PDFs render directly' });
+  }
+
+  const filePath = path.join(UPLOAD_DIR, candidate.resumeFileKey);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Resume file is missing from storage' });
+  }
+
+  try {
+    const buffer = fs.readFileSync(filePath);
+    const result = await mammoth.convertToHtml({ buffer });
+    res.json({ html: sanitizeResumeHtml(result.value) });
+  } catch (err) {
+    res.status(500).json({ error: 'Could not render a preview for this resume', detail: err.message });
+  }
+});
+
+
 // existing candidate, extract its text, and check it line-by-line against
 // the fraud watch-list (same exact-line-match rule as the original
 // ProfileXRay tool).
@@ -383,7 +470,7 @@ router.post(
 
 // GET /candidates/:id/screenings - screening history for a candidate,
 // most recent first.
-router.get('/:id/screenings', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+router.get('/:id/screenings', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
   const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
   if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
 
@@ -473,7 +560,7 @@ router.delete('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
 // GET /candidates/:id/uan-records - employment history entered for a
 // candidate (manual for now - source: 'manual'), oldest first, used to
 // spot overlapping employers ahead of running a UAN check.
-router.get('/:id/uan-records', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+router.get('/:id/uan-records', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
   const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
   if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
 

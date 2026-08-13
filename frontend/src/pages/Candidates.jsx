@@ -2,8 +2,24 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
 import Pagination from '../components/Pagination.jsx';
+import ResumePreviewButton from '../components/ResumePreviewButton.jsx';
 import api from '../api';
 import { useAuth } from '../context/AuthContext.jsx';
+
+// "View resume" cell - opens an inline preview modal (see
+// ResumePreviewButton) rather than a new tab, so screening staff don't
+// lose their place in the candidate list.
+function ResumeLinkCell({ candidate }) {
+  if (!candidate.resumeFileKey) {
+    return <td style={{ color: 'var(--muted)', fontSize: '0.82rem' }}>—</td>;
+  }
+
+  return (
+    <td>
+      <ResumePreviewButton candidateId={candidate._id} candidateName={candidate.name} label="View resume" />
+    </td>
+  );
+}
 
 // Full-screen overlay shown while a resume is being scanned. Stays open
 // for the real duration of the request (extract + match usually takes
@@ -974,6 +990,7 @@ export default function Candidates() {
                 <th>Phone</th>
                 <th>Job</th>
                 <th>Added</th>
+                <th>Resume</th>
                 <th>Fraud watch-list screening</th>
                 {canScreen && <th></th>}
               </tr>
@@ -996,6 +1013,7 @@ export default function Candidates() {
                   )}
                   <td>{c.job?.title || '—'}</td>
                   <td>{new Date(c.createdAt).toLocaleDateString()}</td>
+                  <ResumeLinkCell candidate={c} />
                   <ScreenResumeCell
                     candidate={c}
                     canScreen={canScreen}

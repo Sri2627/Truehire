@@ -4,7 +4,8 @@ const { normalizeCompanyName } = require('./normalizeCompanyName');
 // flagged only when one of its LINES is an exact match (case-insensitive,
 // whitespace-trimmed, punctuation-normalized) to a full fraud-register
 // entry — not a "contains" / substring check. fraudCompanies is the list
-// of FraudCompany docs (already scoped to the caller's tenant) to check
+// of FraudCompany docs (the caller's own tenant entries plus the global
+// platform-wide list — see routes/candidateRoutes.js) to check
 // against.
 function screenResumeText(text, fraudCompanies) {
   const registry = new Map(); // normalizedName -> fraud company doc

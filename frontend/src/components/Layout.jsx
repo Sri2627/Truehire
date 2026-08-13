@@ -4,9 +4,10 @@ import { useAuth } from '../context/AuthContext.jsx';
 import api from '../api';
 import Logo from "../assets/Logoth.png";
 export default function Layout({ children }) {
-  const { user, logout, hasRole } = useAuth();
+  const { user, logout, hasRole, selectedInstitution, selectInstitution } = useAuth();
   const navigate = useNavigate();
   const [me, setMe] = useState(null);
+  const isSuperAdmin = hasRole('superadmin');
 
   // Pulls the current session's company + live fraud-list count, so it's
   // always visible which tenant you're screening against and whether that
@@ -24,6 +25,13 @@ export default function Layout({ children }) {
     navigate('/login');
   }
 
+  // Drops the currently-selected institution and sends the superadmin
+  // back to the full list to pick another one (or add a new one).
+  function handleSwitchInstitution() {
+    selectInstitution(null);
+    navigate('/institutions');
+  }
+
   const fraudListEmpty = me && me.fraudListSize === 0;
 
   return (
@@ -32,34 +40,63 @@ export default function Layout({ children }) {
         <div className="brand">
  
 <img src={Logo} alt="True Hire Logo" className="logo" style={{ width: "180px", height: "auto" }}/>        </div>
-        <NavLink to="/dashboard" className={({ isActive }) => (isActive ? 'active' : '')}>
-          Dashboard
-        </NavLink>
-        <NavLink to="/jobs" className={({ isActive }) => (isActive ? 'active' : '')}>
-          Jobs
-        </NavLink>
-        <NavLink to="/candidates" className={({ isActive }) => (isActive ? 'active' : '')}>
-          Candidates
-        </NavLink>
-        {hasRole('admin') && (
-          <NavLink to="/team" className={({ isActive }) => (isActive ? 'active' : '')}>
-            Team &amp; roles
+        {isSuperAdmin && (
+          <NavLink to="/institutions" className={({ isActive }) => (isActive ? 'active' : '')}>
+            Institutions
           </NavLink>
         )}
-        {hasRole('admin') && (
-          <NavLink to="/fraud" className={({ isActive }) => (isActive ? 'active' : '')}>
-            Fraud watch-list
-          </NavLink>
+
+        {/* A superadmin only sees these once it has picked an institution
+            to look at (see pages/Institutions.jsx "View") - otherwise
+            there's nothing scoped to show yet. Every other role always
+            sees these, scoped to their own company. */}
+        {(!isSuperAdmin || selectedInstitution) && (
+          <>
+            <NavLink to="/dashboard" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Dashboard
+            </NavLink>
+            <NavLink to="/jobs" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Jobs
+            </NavLink>
+            <NavLink to="/candidates" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Candidates
+            </NavLink>
+            {hasRole('admin', 'superadmin') && (
+              <NavLink to="/team" className={({ isActive }) => (isActive ? 'active' : '')}>
+                Team &amp; roles
+              </NavLink>
+            )}
+            {hasRole('admin', 'superadmin') && (
+              <NavLink to="/fraud" className={({ isActive }) => (isActive ? 'active' : '')}>
+                Fraud watch-list
+              </NavLink>
+            )}
+          </>
         )}
         <div style={{ flex: 1 }} />
 
-        {me && (
-          <div style={{ fontSize: '0.74rem', opacity: 0.85, padding: '0 10px', marginBottom: 8 }}>
-            <div>Company: {me.company?.name || '(none set)'}</div>
-            <div style={{ color: fraudListEmpty ? 'var(--danger)' : 'var(--muted)' }}>
-              Fraud list: {me.fraudListSize} {fraudListEmpty ? '⚠ empty' : 'entries'}
+        {isSuperAdmin ? (
+          selectedInstitution && (
+            <div style={{ fontSize: '0.74rem', opacity: 0.85, padding: '0 10px', marginBottom: 8 }}>
+              <div>Viewing: {selectedInstitution.name}</div>
+              <button
+                type="button"
+                onClick={handleSwitchInstitution}
+                style={{ padding: 0, height: 'auto', color: 'var(--purple)', fontWeight: 600, fontSize: '0.74rem' }}
+              >
+                Switch institution
+              </button>
             </div>
-          </div>
+          )
+        ) : (
+          me && (
+            <div style={{ fontSize: '0.74rem', opacity: 0.85, padding: '0 10px', marginBottom: 8 }}>
+              <div>Company: {me.company?.name || '(none set)'}</div>
+              <div style={{ color: fraudListEmpty ? 'var(--danger)' : 'var(--muted)' }}>
+                Fraud list: {me.fraudListSize} {fraudListEmpty ? '⚠ empty' : 'entries'}
+              </div>
+            </div>
+          )
         )}
 
         <div style={{ fontSize: '0.8rem', opacity: 0.8, padding: '0 10px' }}>

@@ -139,11 +139,6 @@ export default function Team() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search]);
 
-  async function changeRole(userId, role) {
-    await api.patch(`/team/${userId}/role`, { role });
-    loadTeam();
-  }
-
   function handleAdded(user) {
     // The new user only actually belongs in the visible list if it
     // matches whatever's in the search box right now.
@@ -195,15 +190,7 @@ export default function Team() {
                 <tr key={member._id}>
                   <td>{member.name}</td>
                   <td>{member.email}</td>
-                  <td>
-                    <select value={member.role} onChange={(e) => changeRole(member._id, e.target.value)}>
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
+                  <td style={{ textTransform: 'capitalize' }}>{member.role}</td>
                 </tr>
               ))}
             </tbody>

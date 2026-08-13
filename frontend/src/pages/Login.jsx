@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import PasswordInput from '../components/PasswordInput.jsx';
+import PjxLogo from '../assets/pjx-logo.png';
 
 export default function Login() {
   const { login } = useAuth();
@@ -25,11 +27,14 @@ export default function Login() {
     setError('');
     setLoading(true);
     try {
-      await login(identifier, password);
+      const loggedInUser = await login(identifier, password);
       // Send them back to the page they were on when the session died,
-      // falling back to the dashboard for a fresh/normal login.
+      // falling back to the dashboard for a fresh/normal login - except a
+      // superadmin, which has no institution's dashboard of its own until
+      // it picks one from /institutions.
       const dest = location.state?.from;
-      const path = dest ? `${dest.pathname}${dest.search || ''}` : '/dashboard';
+      const fallback = loggedInUser?.role === 'superadmin' ? '/institutions' : '/dashboard';
+      const path = dest ? `${dest.pathname}${dest.search || ''}` : fallback;
       navigate(path, { replace: true });
     } catch (err) {
       setError(err.response?.data?.error || 'Login failed');
@@ -39,50 +44,70 @@ export default function Login() {
   }
 
   return (
-    <div className="auth-wrap">
-      <form className="auth-card" onSubmit={handleSubmit}>
-        <h1>
-          True <span style={{
-            background: 'linear-gradient(90deg, #7c5cff, #4f8cff)',
-            WebkitBackgroundClip: 'text',
-            backgroundClip: 'text',
-            color: 'transparent',
-          }}>Hire</span>
-        </h1>
-        <p className="sub">Sign in with your work email or mobile</p>
-
-        {sessionExpired && (
-          <p className="error-text" role="alert">
-            Your session expired. Please sign in again.
+    <div className="auth-split">
+      <div className="auth-split-brand">
+        <img src={PjxLogo} alt="PJX Labs — True Hire" />
+        <div className="auth-split-tagline">
+          <h2>Verify. Validate. Trust.</h2>
+          <p>
+            True Hire screens every resume against your fraud watch-list, ranks candidates against
+            each job's real requirements, and keeps every institution's data cleanly separated —
+            so hiring decisions are backed by evidence, not guesswork.
           </p>
-        )}
+        </div>
+      </div>
 
-        <label htmlFor="identifier">Email or mobile</label>
-        <input
-          id="identifier"
-          value={identifier}
-          onChange={(e) => setIdentifier(e.target.value)}
-          placeholder="you@company.com"
-          autoComplete="username"
-          required
-        />
+      <div className="auth-split-form">
+        <form className="auth-card" onSubmit={handleSubmit}>
+          <h1>
+            True <span style={{
+              background: 'linear-gradient(90deg, #7c5cff, #4f8cff)',
+              WebkitBackgroundClip: 'text',
+              backgroundClip: 'text',
+              color: 'transparent',
+            }}>Hire</span>
+          </h1>
+          <p className="sub">Sign in with your work email or mobile</p>
 
-        <label htmlFor="password">Password</label>
-        <input
-          id="password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoComplete="current-password"
-          required
-        />
+          {sessionExpired && (
+            <p className="error-text" role="alert">
+              Your session expired. Please sign in again.
+            </p>
+          )}
 
-        <button className="btn-primary" type="submit" disabled={loading}>
-          {loading ? 'Signing in…' : 'Sign in'}
-        </button>
+          <label htmlFor="identifier">Email or mobile</label>
+          <input
+            id="identifier"
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
+            placeholder="you@company.com"
+            autoComplete="username"
+            required
+          />
 
-        {error && <p className="error-text">{error}</p>}
-      </form>
+          <label htmlFor="password">Password</label>
+          <PasswordInput
+            id="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+          <p className="sub" style={{ margin: '8px 0 0', textAlign: 'right' }}>
+            <Link to="/forgot-password">Forgot password?</Link>
+          </p>
+
+          <button className="btn-primary" type="submit" disabled={loading}>
+            {loading ? 'Signing in…' : 'Sign in'}
+          </button>
+
+          {error && <p className="error-text">{error}</p>}
+
+          <p className="sub" style={{ marginTop: 16 }}>
+            New institution? <Link to="/signup">Create an account</Link>
+          </p>
+        </form>
+      </div>
     </div>
   );
 }

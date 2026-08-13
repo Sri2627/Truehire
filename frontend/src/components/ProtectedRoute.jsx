@@ -11,13 +11,14 @@ export default function ProtectedRoute({ children, roles }) {
   const location = useLocation();
 
   if (!user) {
-    // Carry the page they were on so Login can send them right back after
-    // they sign in again, instead of always dumping them on /dashboard.
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   if (roles && !roles.includes(user.role)) {
-    return <Navigate to="/dashboard" replace />;
+    // A superadmin hitting a route it doesn't have access to (e.g. /team)
+    // should land on the institution list, not a tenant's dashboard.
+    const fallback = user.role === 'superadmin' ? '/institutions' : '/dashboard';
+    return <Navigate to={fallback} replace />;
   }
 
   return children;

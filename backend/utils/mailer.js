@@ -31,12 +31,12 @@ function getTransporter() {
   return transporter;
 }
 
-// Sends (or, without SMTP configured, simulates) an email to a candidate.
+// Sends (or, without SMTP configured, simulates) a plain-text email.
 // Returns { delivered } so callers can tell the admin whether it actually
 // went out or was only simulated.
-async function sendCandidateEmail({ to, subject, text }) {
+async function sendMail({ to, subject, text }) {
   if (!to) {
-    throw new Error('This candidate has no email address on file');
+    throw new Error('No recipient email address given');
   }
 
   const t = getTransporter();
@@ -54,4 +54,22 @@ async function sendCandidateEmail({ to, subject, text }) {
   return { delivered: usingRealSmtp };
 }
 
-module.exports = { sendCandidateEmail };
+// Thin, semantically-named wrapper kept for existing candidate-email call
+// sites (interview invites, etc).
+async function sendCandidateEmail({ to, subject, text }) {
+  if (!to) {
+    throw new Error('This candidate has no email address on file');
+  }
+  return sendMail({ to, subject, text });
+}
+
+// POST /auth/forgot-password - emails the 6-digit password reset code.
+async function sendPasswordResetEmail({ to, code }) {
+  return sendMail({
+    to,
+    subject: 'Your True Hire password reset code',
+    text: `Your password reset code is ${code}. It expires in 15 minutes. If you didn't request this, you can ignore this email.`,
+  });
+}
+
+module.exports = { sendMail, sendCandidateEmail, sendPasswordResetEmail };

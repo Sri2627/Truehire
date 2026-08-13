@@ -27,7 +27,7 @@ async function run() {
   } else {
     const previousRole = user.role;
     user.role = 'admin';
-    await user.save();
+    await user.save({ bypassDocumentValidation: true });
     console.log(`Updated "${email}": role "${previousRole}" -> "admin"`);
   }
 

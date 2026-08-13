@@ -24,6 +24,7 @@ const candidateRoutes = require('./routes/candidateRoutes');
 const teamRoutes = require('./routes/teamRoutes');
 const fraudRoutes = require('./routes/fraudRoutes');
 const interviewRoutes = require('./routes/interviewRoutes');
+const institutionRoutes = require('./routes/institutionRoutes');
 
 const app = express();
 
@@ -39,6 +40,7 @@ app.use('/candidates', candidateRoutes);
 app.use('/candidates/:id/interviews', interviewRoutes);
 app.use('/team', teamRoutes);
 app.use('/fraud', fraudRoutes);
+app.use('/institutions', institutionRoutes);
 
 // Fallback error handler
 app.use((err, req, res, next) => {

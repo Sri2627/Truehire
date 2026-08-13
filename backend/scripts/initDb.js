@@ -45,7 +45,7 @@ const COLLECTIONS = [
           email: { bsonType: ['string', 'null'] },
           mobile: { bsonType: ['string', 'null'] },
           passwordHash: { bsonType: 'string' },
-          role: { enum: ['admin', 'recruiter', 'viewer'] },
+          role: { enum: ['superadmin', 'admin', 'recruiter', 'viewer'] },
           mobileVerified: { bsonType: 'bool' },
           emailVerified: { bsonType: 'bool' },
         },

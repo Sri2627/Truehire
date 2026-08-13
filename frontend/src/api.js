@@ -11,11 +11,19 @@ function announceSessionExpired() {
   window.dispatchEvent(new Event('th:session-expired'));
 }
 
-// Attach the stored access token to every request automatically.
+// Attach the stored access token to every request automatically. Also
+// attaches which institution a superadmin currently has selected (see
+// pages/Institutions.jsx) as an x-company-id header - the backend's
+// resolveCompanyScope middleware only reads this for a superadmin token,
+// so it's harmless to send unconditionally for a regular tenant user too.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('th_access_token');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  const selectedInstitution = localStorage.getItem('th_selected_institution_id');
+  if (selectedInstitution) {
+    config.headers['x-company-id'] = selectedInstitution;
   }
   return config;
 });

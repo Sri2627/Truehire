@@ -4,12 +4,16 @@ const Job = require('../models/Job');
 const Candidate = require('../models/Candidate');
 const Screening = require('../models/Screening');
 const AuditLog = require('../models/AuditLog');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth, requireRole, resolveCompanyScope } = require('../middleware/auth');
 const { computeMatchScore } = require('../utils/jobMatching');
 
 const router = express.Router();
 
 router.use(requireAuth);
+// Resolves a superadmin's selected institution (x-company-id header) into
+// req.user.companyId so every query below keeps working unchanged. No-op
+// for normal tenant users (their companyId already came from their JWT).
+router.use(resolveCompanyScope);
 
 // Shared by POST / and PATCH /:id - turns a raw requiredSkills array from
 // the request body into the { name, weight, minYears } shape the schema
@@ -35,7 +39,7 @@ function cleanRequiredSkills(requiredSkills) {
 // Optional ?search=... matches the job title (case-insensitive substring).
 // Optional ?page=&limit= paginate the result (default 10/page, max 100) -
 // response is { items, total, page, limit, totalPages }.
-router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+router.get('/', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
   const companyId = new mongoose.Types.ObjectId(req.user.companyId);
 
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -78,7 +82,7 @@ router.get('/', requireRole('admin', 'recruiter', 'viewer'), async (req, res) =>
 });
 
 // GET /jobs/:id
-router.get('/:id', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+router.get('/:id', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
   const job = await Job.findOne({ _id: req.params.id, companyId: req.user.companyId });
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
@@ -94,7 +98,7 @@ router.get('/:id', requireRole('admin', 'recruiter', 'viewer'), async (req, res)
 // stored skills, with a per-candidate matched/missing/exceeding
 // breakdown alongside the score. Requires the job to have at least one
 // required skill configured.
-router.get('/:id/matches', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+router.get('/:id/matches', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
   const job = await Job.findOne({ _id: req.params.id, companyId: req.user.companyId });
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
@@ -129,6 +133,10 @@ router.get('/:id/matches', requireRole('admin', 'recruiter', 'viewer'), async (r
           totalYearsExperience: c.totalYearsExperience,
           careerFlags: c.careerFlags,
           screeningVerdict: latestScreening?.verdict || null,
+          // So the Matches page can offer a "View resume" link per
+          // candidate without a second round-trip - see
+          // GET /candidates/:id/resume.
+          hasResume: !!c.resumeFileKey,
         },
         ...computeMatchScore(job, c),
       };

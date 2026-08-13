@@ -5,7 +5,13 @@ const fraudCompanySchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     // Lowercased, punctuation-stripped copy used for matching.
     normalizedName: { type: String, required: true, index: true },
-    companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
+    // Null = a global entry, checked against every tenant's screening -
+    // used for the platform-wide fake-institutions list, since a fake
+    // university is fake for every company, not just whichever tenant
+    // happened to be attached when it was seeded. Set to a real Company
+    // id for a tenant's own manually-added entries, which stay private
+    // to that tenant (see routes/fraudRoutes.js).
+    companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', default: null },
     source: { type: String, enum: ['excel_upload', 'manual_entry'], default: 'manual_entry' },
     addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

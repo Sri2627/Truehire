@@ -9,7 +9,8 @@
     "dev": "node --watch server.js",
     "init-db": "node scripts/initDb.js",
     "seed-fraud-list": "node scripts/seedFraudList.js",
-    "fix-admin-role": "node scripts/fixAdminRole.js"
+    "fix-admin-role": "node scripts/fixAdminRole.js",
+    "create-superadmin": "node scripts/createSuperAdmin.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

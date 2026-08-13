@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
 import InterviewActions from '../components/InterviewActions.jsx';
+import ResumePreviewButton from '../components/ResumePreviewButton.jsx';
 import api from '../api';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -159,6 +160,7 @@ export default function JobMatches() {
                 <th>Matched</th>
                 <th>Missing</th>
                 <th>Exceeding</th>
+                <th>Resume</th>
                 {canScreen && <th>Interview</th>}
               </tr>
             </thead>
@@ -195,6 +197,13 @@ export default function JobMatches() {
                       color="warning"
                       render={(m) => `${m.name} — ${m.candidateYears}y vs ${m.minYears}y required`}
                     />
+                  </td>
+                  <td>
+                    {r.candidate.hasResume ? (
+                      <ResumePreviewButton candidateId={r.candidate._id} candidateName={r.candidate.name} label="View resume" />
+                    ) : (
+                      <span style={{ color: 'var(--muted)' }}>—</span>
+                    )}
                   </td>
                   {canScreen && (
                     r.candidate.screeningVerdict === 'clear' ? (
