@@ -30,10 +30,10 @@ export default function Login() {
       const loggedInUser = await login(identifier, password);
       // Send them back to the page they were on when the session died,
       // falling back to the dashboard for a fresh/normal login - except a
-      // superadmin, which has no institution's dashboard of its own until
-      // it picks one from /institutions.
+      // superadmin, which lands on its own platform-wide dashboard
+      // instead of a tenant dashboard.
       const dest = location.state?.from;
-      const fallback = loggedInUser?.role === 'superadmin' ? '/institutions' : '/dashboard';
+      const fallback = loggedInUser?.role === 'superadmin' ? '/superadmin' : '/dashboard';
       const path = dest ? `${dest.pathname}${dest.search || ''}` : fallback;
       navigate(path, { replace: true });
     } catch (err) {
@@ -104,7 +104,7 @@ export default function Login() {
           {error && <p className="error-text">{error}</p>}
 
           <p className="sub" style={{ marginTop: 16 }}>
-            New institution? <Link to="/signup">Create an account</Link>
+            New institution? <Link to="/pricing">Create an account</Link>
           </p>
         </form>
       </div>

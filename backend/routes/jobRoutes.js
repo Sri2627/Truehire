@@ -3,9 +3,11 @@ const mongoose = require('mongoose');
 const Job = require('../models/Job');
 const Candidate = require('../models/Candidate');
 const Screening = require('../models/Screening');
+const Company = require('../models/Company');
 const AuditLog = require('../models/AuditLog');
 const { requireAuth, requireRole, resolveCompanyScope } = require('../middleware/auth');
 const { computeMatchScore } = require('../utils/jobMatching');
+const { PLAN_LIMITS, PLAN_LABELS } = require('../config/plans');
 
 const router = express.Router();
 
@@ -14,6 +16,28 @@ router.use(requireAuth);
 // req.user.companyId so every query below keeps working unchanged. No-op
 // for normal tenant users (their companyId already came from their JWT).
 router.use(resolveCompanyScope);
+
+// Shared by POST / and PATCH /:id - trims/lowercases/dedupes a raw
+// interviewPanel array from the request body and rejects anything that
+// isn't a plausible email address, or throws a string error message.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function cleanInterviewPanel(interviewPanel) {
+  if (!Array.isArray(interviewPanel)) {
+    throw 'interviewPanel must be an array of email addresses';
+  }
+  const cleaned = [];
+  const seen = new Set();
+  for (const raw of interviewPanel) {
+    const email = String(raw || '').trim().toLowerCase();
+    if (!email) continue;
+    if (!EMAIL_RE.test(email)) throw `"${email}" is not a valid email address`;
+    if (!seen.has(email)) {
+      seen.add(email);
+      cleaned.push(email);
+    }
+  }
+  return cleaned;
+}
 
 // Shared by POST / and PATCH /:id - turns a raw requiredSkills array from
 // the request body into the { name, weight, minYears } shape the schema
@@ -144,7 +168,13 @@ router.get('/:id/matches', requireRole('admin', 'recruiter', 'viewer', 'superadm
     .sort((a, b) => b.score - a.score);
 
   res.json({
-    job: { _id: job._id, title: job.title, requiredSkills: job.requiredSkills, minExperienceYears: job.minExperienceYears },
+    job: {
+      _id: job._id,
+      title: job.title,
+      requiredSkills: job.requiredSkills,
+      minExperienceYears: job.minExperienceYears,
+      interviewPanel: job.interviewPanel,
+    },
     ranked,
   });
 });
@@ -154,9 +184,23 @@ router.get('/:id/matches', requireRole('admin', 'recruiter', 'viewer', 'superadm
 // Candidates are registered against one of these, so this has to exist
 // first.
 router.post('/', requireRole('admin', 'recruiter'), async (req, res) => {
-  const { title, description, requiredSkills, minExperienceYears } = req.body;
+  const { title, description, requiredSkills, minExperienceYears, interviewPanel } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'A job title is required' });
   if (!description || !description.trim()) return res.status(400).json({ error: 'A job description is required' });
+
+  // Plan enforcement - not just a number on the pricing page. A company
+  // on the free plan (10 jobs) genuinely cannot post an 11th until they
+  // close/delete one or upgrade.
+  const company = await Company.findById(req.user.companyId);
+  const jobLimit = PLAN_LIMITS[company?.plan]?.jobs ?? PLAN_LIMITS.free.jobs;
+  if (Number.isFinite(jobLimit)) {
+    const currentJobCount = await Job.countDocuments({ companyId: req.user.companyId });
+    if (currentJobCount >= jobLimit) {
+      return res.status(403).json({
+        error: `Your ${PLAN_LABELS[company?.plan] || 'Free'} plan allows up to ${jobLimit} job posting${jobLimit === 1 ? '' : 's'}. Upgrade your plan to post more.`,
+      });
+    }
+  }
 
   let cleanedSkills = [];
   if (requiredSkills !== undefined) {
@@ -167,11 +211,21 @@ router.post('/', requireRole('admin', 'recruiter'), async (req, res) => {
     }
   }
 
+  let cleanedPanel = [];
+  if (interviewPanel !== undefined) {
+    try {
+      cleanedPanel = cleanInterviewPanel(interviewPanel);
+    } catch (msg) {
+      return res.status(400).json({ error: msg });
+    }
+  }
+
   const job = await Job.create({
     title: title.trim(),
     description: description.trim(),
     requiredSkills: cleanedSkills,
     minExperienceYears: minExperienceYears === '' || minExperienceYears == null ? undefined : Number(minExperienceYears),
+    interviewPanel: cleanedPanel,
     companyId: req.user.companyId,
     createdBy: req.user.id,
   });
@@ -196,7 +250,7 @@ router.patch('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
   const job = await Job.findOne({ _id: req.params.id, companyId: req.user.companyId });
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
-  const { title, description, requiredSkills, minExperienceYears } = req.body;
+  const { title, description, requiredSkills, minExperienceYears, interviewPanel } = req.body;
   const update = {};
 
   if (title !== undefined) {
@@ -212,6 +266,14 @@ router.patch('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
   if (requiredSkills !== undefined) {
     try {
       update.requiredSkills = cleanRequiredSkills(requiredSkills);
+    } catch (msg) {
+      return res.status(400).json({ error: msg });
+    }
+  }
+
+  if (interviewPanel !== undefined) {
+    try {
+      update.interviewPanel = cleanInterviewPanel(interviewPanel);
     } catch (msg) {
       return res.status(400).json({ error: msg });
     }

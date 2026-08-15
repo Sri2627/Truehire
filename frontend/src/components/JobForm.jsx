@@ -7,6 +7,12 @@ export function skillRowsFromJob(job) {
   return (job?.requiredSkills || []).map((s) => ({ name: s.name, weight: s.weight, minYears: s.minYears }));
 }
 
+// Turns a job's stored interviewPanel (array of emails) into the
+// comma-separated string the panel input field edits.
+export function panelStringFromJob(job) {
+  return (job?.interviewPanel || []).join(', ');
+}
+
 // Required-skill rows, shared by the "create job" and "edit job" forms.
 // This is the only place requiredSkills/minYears/weight get set - the
 // matches ranking endpoint (GET /jobs/:id/matches) refuses to rank
@@ -120,6 +126,13 @@ export default function JobFormFields({ form, setForm, skills, setSkills, autoFo
       />
 
       <RequiredSkillsEditor skills={skills} onChange={setSkills} />
+
+      <label style={{ marginTop: 14 }}>Interview panel emails (optional — CC'd on every interview invitation sent for matches against this job)</label>
+      <input
+        value={form.interviewPanel}
+        onChange={(e) => setForm({ ...form, interviewPanel: e.target.value })}
+        placeholder="panel1@company.com, panel2@company.com"
+      />
     </>
   );
 }

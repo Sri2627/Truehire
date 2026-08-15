@@ -17,6 +17,10 @@ const jobSchema = new mongoose.Schema(
       },
     ],
     minExperienceYears: { type: Number, min: 0 },
+    // Emails CC'd on every interview-invitation email sent for candidates
+    // matched against this job (see routes/interviewRoutes.js POST
+    // /:inviteId/send). Set from the job form alongside required skills.
+    interviewPanel: [{ type: String, trim: true, lowercase: true }],
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   },

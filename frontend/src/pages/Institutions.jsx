@@ -1,9 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
 import Pagination from '../components/Pagination.jsx';
 import api from '../api';
-import { useAuth } from '../context/AuthContext.jsx';
 
 const EMPTY_FORM = {
   name: '',
@@ -101,9 +99,9 @@ function NewInstitutionModal({ onClose, onAdded }) {
 
           <label style={{ marginTop: 10 }}>Plan</label>
           <select value={form.plan} onChange={(e) => setForm({ ...form, plan: e.target.value })}>
-            <option value="free">Free</option>
-            <option value="pro">Pro</option>
-            <option value="enterprise">Enterprise</option>
+            <option value="free">Free — ₹0</option>
+            <option value="pro">Pro — ₹4,999/month</option>
+            <option value="enterprise">Enterprise — ₹19,999/month</option>
           </select>
 
           <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 16, cursor: 'pointer' }}>
@@ -163,8 +161,6 @@ function NewInstitutionModal({ onClose, onAdded }) {
 }
 
 export default function Institutions() {
-  const { selectInstitution } = useAuth();
-  const navigate = useNavigate();
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
@@ -206,14 +202,17 @@ export default function Institutions() {
     loadInstitutions(search, 1);
   }
 
-  // "View" hands this institution's id/name to AuthContext (persisted so
-  // api.js can send it as x-company-id on every request) and jumps into
-  // its Jobs screen - from there the sidebar's Jobs/Candidates/Fraud
-  // watch-list links all stay scoped to this institution until it's
-  // switched or cleared.
+  // "View" opens this institution in its own new tab rather than
+  // navigating in-app - each tab then has its own independent selected
+  // institution (see AuthContext.jsx), so a superadmin can have two
+  // institutions' data open side by side without one clobbering the
+  // other. Named window target (not plain '_blank') so clicking View on
+  // the SAME institution again reuses its existing tab instead of
+  // spawning duplicates - only a genuinely different institution opens a
+  // genuinely new tab.
   function handleView(inst) {
-    selectInstitution({ id: inst._id, name: inst.name });
-    navigate('/jobs');
+    const params = new URLSearchParams({ institution: inst._id, institutionName: inst.name || '' });
+    window.open(`/dashboard?${params.toString()}`, `institution-${inst._id}`);
   }
 
   return (

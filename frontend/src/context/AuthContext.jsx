@@ -10,26 +10,54 @@ export function AuthProvider({ children }) {
   });
 
   // Which institution a superadmin currently has "open" - id + name, kept
-  // in localStorage (read by api.js on every request as the x-company-id
-  // header) and mirrored into state so the sidebar/pages can react to it.
-  // Meaningless for a regular tenant user, who only ever has their own
-  // companyId anyway.
+  // in sessionStorage (not localStorage - that's shared across every tab
+  // of this origin, so two tabs viewing different institutions would
+  // collide and both end up sending whichever institution was selected
+  // *last*, in whichever tab). sessionStorage is scoped to this one tab,
+  // matching how Institutions.jsx now opens each institution in its own
+  // tab (see handleView there). Read by api.js on every request as the
+  // x-company-id header. Meaningless for a regular tenant user, who only
+  // ever has their own companyId anyway.
   const [selectedInstitution, setSelectedInstitutionState] = useState(() => {
-    const id = localStorage.getItem('th_selected_institution_id');
-    const name = localStorage.getItem('th_selected_institution_name');
+    const id = sessionStorage.getItem('th_selected_institution_id');
+    const name = sessionStorage.getItem('th_selected_institution_name');
     return id ? { id, name } : null;
   });
 
   function selectInstitution(institution) {
     if (institution) {
-      localStorage.setItem('th_selected_institution_id', institution.id);
-      localStorage.setItem('th_selected_institution_name', institution.name || '');
+      sessionStorage.setItem('th_selected_institution_id', institution.id);
+      sessionStorage.setItem('th_selected_institution_name', institution.name || '');
     } else {
-      localStorage.removeItem('th_selected_institution_id');
-      localStorage.removeItem('th_selected_institution_name');
+      sessionStorage.removeItem('th_selected_institution_id');
+      sessionStorage.removeItem('th_selected_institution_name');
     }
     setSelectedInstitutionState(institution || null);
   }
+
+  // A freshly-opened tab (see Institutions.jsx's handleView, which opens
+  // each institution with ?institution=<id>&institutionName=<name> in the
+  // URL) picks up its institution from there rather than from
+  // sessionStorage - a brand-new same-origin tab opened via window.open
+  // starts with a *clone* of the opener's sessionStorage, which would
+  // otherwise make the new tab briefly show whichever institution the
+  // opener had selected before correcting itself. Reading from the URL
+  // avoids that flash entirely, and doubles as making these links
+  // shareable/bookmarkable. Runs once; strips the params afterward so
+  // they don't linger in the address bar or get reprocessed on refresh
+  // in a confusing way.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('institution');
+    if (id) {
+      selectInstitution({ id, name: params.get('institutionName') || '' });
+      params.delete('institution');
+      params.delete('institutionName');
+      const query = params.toString();
+      window.history.replaceState({}, '', window.location.pathname + (query ? `?${query}` : ''));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function login(identifier, password) {
     const { data } = await api.post('/auth/login', { identifier, password });
@@ -43,8 +71,8 @@ export function AuthProvider({ children }) {
   // Creates a brand new institution (Company) plus its first admin user,
   // and logs straight in - same token/localStorage handling as login()
   // above, just against a different endpoint.
-  async function signup(companyName, name, email, mobile, password) {
-    const { data } = await api.post('/auth/signup', { companyName, name, email, mobile, password });
+  async function signup(companyName, name, email, mobile, password, plan) {
+    const { data } = await api.post('/auth/signup', { companyName, name, email, mobile, password, plan });
     localStorage.setItem('th_access_token', data.accessToken);
     localStorage.setItem('th_refresh_token', data.refreshToken);
     localStorage.setItem('th_user', JSON.stringify(data.user));

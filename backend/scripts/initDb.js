@@ -123,7 +123,13 @@ const COLLECTIONS = [
     validator: {
       $jsonSchema: {
         bsonType: 'object',
-        required: ['candidateId', 'subject', 'body', 'draftedBy'],
+        // subject/body are no longer set when an interview is first
+        // scheduled - only once the Email preview popup's Send button is
+        // clicked (see routes/interviewRoutes.js POST /:inviteId/send).
+        // Keeping them required here would reject every "just scheduled,
+        // not yet sent" invite with MongoDB's own validator, independent
+        // of and before Mongoose ever gets a say.
+        required: ['candidateId', 'draftedBy'],
         properties: {
           status: { enum: ['drafted', 'opened_in_mail', 'marked_sent'] },
         },

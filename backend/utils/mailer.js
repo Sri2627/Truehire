@@ -33,16 +33,22 @@ function getTransporter() {
 
 // Sends (or, without SMTP configured, simulates) a plain-text email.
 // Returns { delivered } so callers can tell the admin whether it actually
-// went out or was only simulated.
-async function sendMail({ to, subject, text }) {
+// went out or was only simulated. `cc` is optional - an array of
+// addresses, filtered down to only non-empty ones before being handed to
+// nodemailer (which is happy with `cc: []` too, but this keeps the sent
+// message clean of an empty header either way).
+async function sendMail({ to, cc, subject, text }) {
   if (!to) {
     throw new Error('No recipient email address given');
   }
+
+  const ccList = Array.isArray(cc) ? cc.filter(Boolean) : [];
 
   const t = getTransporter();
   const info = await t.sendMail({
     from: process.env.SMTP_FROM || 'True Hire <no-reply@truehire.local>',
     to,
+    ...(ccList.length ? { cc: ccList } : {}),
     subject,
     text,
   });
@@ -56,11 +62,11 @@ async function sendMail({ to, subject, text }) {
 
 // Thin, semantically-named wrapper kept for existing candidate-email call
 // sites (interview invites, etc).
-async function sendCandidateEmail({ to, subject, text }) {
+async function sendCandidateEmail({ to, cc, subject, text }) {
   if (!to) {
     throw new Error('This candidate has no email address on file');
   }
-  return sendMail({ to, subject, text });
+  return sendMail({ to, cc, subject, text });
 }
 
 // POST /auth/forgot-password - emails the 6-digit password reset code.

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
-import JobFormFields, { skillRowsFromJob } from '../components/JobForm.jsx';
+import JobFormFields, { skillRowsFromJob, panelStringFromJob } from '../components/JobForm.jsx';
 import api from '../api';
 import { useAuth } from '../context/AuthContext.jsx';
 
@@ -81,6 +81,10 @@ function JobView({ job, canManage, onEdit, onToggleStatus, onDeleted }) {
             Minimum overall experience: {job.minExperienceYears} years
           </p>
         ) : null}
+        <p style={{ color: 'var(--muted)', fontSize: '0.84rem', marginTop: 12, marginBottom: 0 }}>
+          Interview panel (CC'd on invitation emails):{' '}
+          {job.interviewPanel?.length ? job.interviewPanel.join(', ') : canManage ? 'none set — click "Edit" above to add some.' : 'none set'}
+        </p>
       </div>
 
       {canManage && (job.candidateCount ?? 0) === 0 && (
@@ -126,6 +130,7 @@ function JobEdit({ job, onSaved, onCancel }) {
     title: job.title,
     description: job.description,
     minExperienceYears: job.minExperienceYears ?? '',
+    interviewPanel: panelStringFromJob(job),
   });
   const [skills, setSkills] = useState(skillRowsFromJob(job));
   const [error, setError] = useState('');
@@ -147,6 +152,7 @@ function JobEdit({ job, onSaved, onCancel }) {
       const { data } = await api.patch(`/jobs/${job._id}`, {
         ...form,
         requiredSkills: skills.map((s) => ({ name: s.name, weight: s.weight, minYears: s.minYears })),
+        interviewPanel: form.interviewPanel.split(',').map((e) => e.trim()).filter(Boolean),
       });
       onSaved(data);
     } catch (err) {

@@ -40,10 +40,21 @@ export default function Layout({ children }) {
         <div className="brand">
  
 <img src={Logo} alt="True Hire Logo" className="logo" style={{ width: "180px", height: "auto" }}/>        </div>
-        {isSuperAdmin && (
-          <NavLink to="/institutions" className={({ isActive }) => (isActive ? 'active' : '')}>
-            Institutions
-          </NavLink>
+        {isSuperAdmin && !selectedInstitution && (
+          <>
+            <NavLink to="/superadmin" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Dashboard
+            </NavLink>
+            <NavLink to="/institutions" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Institutions
+            </NavLink>
+            <NavLink to="/superadmin/fraud" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Fraud watch-list
+            </NavLink>
+            <NavLink to="/superadmin/revenue" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Revenue
+            </NavLink>
+          </>
         )}
 
         {/* A superadmin only sees these once it has picked an institution

@@ -16,8 +16,8 @@ export default function ProtectedRoute({ children, roles }) {
 
   if (roles && !roles.includes(user.role)) {
     // A superadmin hitting a route it doesn't have access to (e.g. /team)
-    // should land on the institution list, not a tenant's dashboard.
-    const fallback = user.role === 'superadmin' ? '/institutions' : '/dashboard';
+    // should land on its own platform dashboard, not a tenant's dashboard.
+    const fallback = user.role === 'superadmin' ? '/superadmin' : '/dashboard';
     return <Navigate to={fallback} replace />;
   }
 

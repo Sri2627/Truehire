@@ -5,6 +5,7 @@ const User = require('../models/User');
 const Company = require('../models/Company');
 const AuditLog = require('../models/AuditLog');
 const FraudCompany = require('../models/FraudCompany');
+const { PLAN_PRICING } = require('../config/plans');
 const { sendPasswordResetEmail } = require('../utils/mailer');
 
 const RESET_CODE_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -59,7 +60,7 @@ function signTokens(user) {
 // self-serve.
 async function signupCompany(req, res) {
   try {
-    const { companyName, name, email, mobile, password } = req.body;
+    const { companyName, name, email, mobile, password, plan } = req.body;
 
     if (!companyName || !companyName.trim()) {
       return res.status(400).json({ error: 'An institution/company name is required' });
@@ -67,13 +68,20 @@ async function signupCompany(req, res) {
     if (!name || !password || (!email && !mobile)) {
       return res.status(400).json({ error: 'name, password, and email or mobile are required' });
     }
+    // Chosen on the pricing step before this form is submitted (see
+    // frontend/src/pages/Signup.jsx) - falls back to 'free' if omitted
+    // rather than rejecting the signup, since a missing plan shouldn't
+    // block account creation.
+    if (plan !== undefined && !Object.prototype.hasOwnProperty.call(PLAN_PRICING, plan)) {
+      return res.status(400).json({ error: `plan must be one of: ${Object.keys(PLAN_PRICING).join(', ')}` });
+    }
 
     const existing = await User.findOne({ $or: [{ email }, { mobile }] });
     if (existing) {
       return res.status(409).json({ error: 'A user with that email or mobile already exists' });
     }
 
-    const company = await Company.create({ name: companyName.trim() });
+    const company = await Company.create({ name: companyName.trim(), plan: plan || 'free' });
 
     let user;
     try {
@@ -114,7 +122,7 @@ async function signupCompany(req, res) {
     res.status(201).json({
       ...tokens,
       user: { id: user._id, name: user.name, email: user.email, role: effectiveRole(user) },
-      company: { id: company._id, name: company.name },
+      company: { id: company._id, name: company.name, plan: company.plan },
     });
   } catch (err) {
     res.status(500).json({ error: 'Could not create institution', detail: err.message });

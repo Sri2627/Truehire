@@ -7,6 +7,7 @@ const Job = require('../models/Job');
 const Candidate = require('../models/Candidate');
 const FraudCompany = require('../models/FraudCompany');
 const AuditLog = require('../models/AuditLog');
+const { PLAN_PRICING } = require('../config/plans');
 const { requireAuth, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -86,6 +87,84 @@ router.get('/', async (req, res) => {
 
   const total = result.totalCount[0]?.count || 0;
   res.json({ items: result.items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) });
+});
+
+// GET /institutions/overview - headline platform numbers plus the 5 most
+// recently created institutions, for the superadmin's landing dashboard.
+// Registered before GET /:id below, since ":id" would otherwise treat the
+// literal path segment "overview" as an institution id.
+router.get('/overview', async (req, res) => {
+  const [totalInstitutions, totalUsers, totalJobs, totalCandidates, globalFraudCount, institutionFraudCount, recent, allCompanies] =
+    await Promise.all([
+      Company.countDocuments({}),
+      User.countDocuments({ role: { $ne: 'superadmin' } }),
+      Job.countDocuments({}),
+      Candidate.countDocuments({}),
+      FraudCompany.countDocuments({ companyId: null }),
+      FraudCompany.countDocuments({ companyId: { $ne: null } }),
+      Company.find({}).sort({ createdAt: -1 }).limit(5),
+      Company.find({}).select('plan'),
+    ]);
+
+  const currentMRR = allCompanies.reduce((sum, c) => sum + (PLAN_PRICING[c.plan] || 0), 0);
+  const payingInstitutions = allCompanies.filter((c) => (PLAN_PRICING[c.plan] || 0) > 0).length;
+
+  res.json({
+    totalInstitutions,
+    totalUsers,
+    totalJobs,
+    totalCandidates,
+    globalFraudCount,
+    institutionFraudCount,
+    totalFraudCount: globalFraudCount + institutionFraudCount,
+    recentInstitutions: recent,
+    currentMRR,
+    payingInstitutions,
+  });
+});
+
+// GET /institutions/revenue - per-institution and platform-wide revenue,
+// ESTIMATED from each institution's plan (see config/plans.js) rather
+// than pulled from real payment records - there is no billing/payment
+// gateway integrated into True Hire yet. estimatedTotalRevenue for an
+// institution is its plan's monthly price × whole months since it
+// signed up (minimum 1, so a same-day signup still counts its first
+// month). Registered before GET /:id, same reasoning as /overview above.
+router.get('/revenue', async (req, res) => {
+  const companies = await Company.find({}).sort({ createdAt: -1 });
+  const now = Date.now();
+
+  const items = companies.map((c) => {
+    const monthlyPrice = PLAN_PRICING[c.plan] ?? 0;
+    const msSinceSignup = now - new Date(c.createdAt).getTime();
+    const monthsActive = Math.max(Math.floor(msSinceSignup / (30 * 24 * 60 * 60 * 1000)) + 1, 1);
+    return {
+      id: c._id,
+      name: c.name,
+      plan: c.plan,
+      monthlyPrice,
+      monthsActive,
+      estimatedTotalRevenue: monthlyPrice * monthsActive,
+      createdAt: c.createdAt,
+    };
+  });
+
+  const currentMRR = items.reduce((sum, i) => sum + i.monthlyPrice, 0);
+  const totalEstimatedRevenue = items.reduce((sum, i) => sum + i.estimatedTotalRevenue, 0);
+
+  const byPlan = {};
+  for (const i of items) {
+    if (!byPlan[i.plan]) byPlan[i.plan] = { plan: i.plan, count: 0, mrr: 0 };
+    byPlan[i.plan].count += 1;
+    byPlan[i.plan].mrr += i.monthlyPrice;
+  }
+
+  res.json({
+    items,
+    currentMRR,
+    totalEstimatedRevenue,
+    byPlan: Object.values(byPlan),
+  });
 });
 
 // GET /institutions/:id - single institution's detail + stats, plus its

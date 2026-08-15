@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import Layout from '../components/Layout.jsx';
-import InterviewActions from '../components/InterviewActions.jsx';
 import ResumePreviewButton from '../components/ResumePreviewButton.jsx';
 import api from '../api';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -46,6 +45,25 @@ function ScoreBar({ score, width = 90 }) {
         <div style={{ width: `${Math.min(score, 100)}%`, height: '100%', background: color }} />
       </div>
       <span style={{ fontWeight: 600, color, fontSize: '0.84rem', minWidth: 30 }}>{score}</span>
+    </div>
+  );
+}
+
+// Overall score, plus its two sub-scores, stacked into one compact
+// column instead of three separate table columns - keeps the table from
+// running wider than the window on anything but a very large screen.
+function ScoreBreakdown({ score, skillScore, experienceScore }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 110 }}>
+      <ScoreBar score={score} width={80} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: 'var(--muted)' }}>
+        <span style={{ width: 30 }}>Skill</span>
+        <ScoreBar score={skillScore} width={44} />
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: 'var(--muted)' }}>
+        <span style={{ width: 30 }}>Exp.</span>
+        <ScoreBar score={experienceScore} width={44} />
+      </div>
     </div>
   );
 }
@@ -149,14 +167,13 @@ export default function JobMatches() {
             No candidates to rank yet — registered candidates whose resume came back flagged are left off this list.
           </p>
         ) : (
-          <table>
+          <div style={{ overflowX: 'auto' }}>
+          <table style={{ minWidth: 900 }}>
             <thead>
               <tr>
                 <th>Rank</th>
                 <th>Candidate</th>
                 <th>Score</th>
-                <th>Skills</th>
-                <th>Experience</th>
                 <th>Matched</th>
                 <th>Missing</th>
                 <th>Exceeding</th>
@@ -173,13 +190,7 @@ export default function JobMatches() {
                     <div style={{ color: 'var(--muted)', fontSize: '0.78rem' }}>{r.candidate.email || '—'}</div>
                   </td>
                   <td>
-                    <ScoreBar score={r.score} />
-                  </td>
-                  <td>
-                    <ScoreBar score={r.skillScore} width={60} />
-                  </td>
-                  <td>
-                    <ScoreBar score={r.experienceScore} width={60} />
+                    <ScoreBreakdown score={r.score} skillScore={r.skillScore} experienceScore={r.experienceScore} />
                   </td>
                   <td>
                     <SkillChips
@@ -206,18 +217,23 @@ export default function JobMatches() {
                     )}
                   </td>
                   {canScreen && (
-                    r.candidate.screeningVerdict === 'clear' ? (
-                      <InterviewActions candidate={r.candidate} />
-                    ) : (
-                      <td style={{ color: 'var(--muted)', fontSize: '0.78rem' }}>
-                        {r.candidate.screeningVerdict ? '—' : 'Not screened yet'}
-                      </td>
-                    )
+                    <td>
+                      {r.candidate.screeningVerdict === 'clear' ? (
+                        <Link to={`/jobs/${id}/candidates/${r.candidate._id}/interview`} style={{ fontSize: '0.82rem', fontWeight: 600 }}>
+                          Manage interview →
+                        </Link>
+                      ) : (
+                        <span style={{ color: 'var(--muted)', fontSize: '0.78rem' }}>
+                          {r.candidate.screeningVerdict ? '—' : 'Not screened yet'}
+                        </span>
+                      )}
+                    </td>
                   )}
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </Layout>

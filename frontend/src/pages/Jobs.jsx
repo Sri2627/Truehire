@@ -11,7 +11,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 // submit, close. Keeps the Jobs page itself to just a list + a button,
 // instead of an always-open form taking up space above the table.
 function NewJobModal({ onClose, onCreated }) {
-  const [form, setForm] = useState({ title: '', description: '', minExperienceYears: '' });
+  const [form, setForm] = useState({ title: '', description: '', minExperienceYears: '', interviewPanel: '' });
   const [skills, setSkills] = useState([]);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -32,6 +32,7 @@ function NewJobModal({ onClose, onCreated }) {
       await api.post('/jobs', {
         ...form,
         requiredSkills: skills.map((s) => ({ name: s.name, weight: s.weight, minYears: s.minYears })),
+        interviewPanel: form.interviewPanel.split(',').map((e) => e.trim()).filter(Boolean),
       });
       onCreated();
       onClose();
@@ -95,63 +96,6 @@ function NewJobModal({ onClose, onCreated }) {
   );
 }
 
-// Delete button for a job with zero candidates registered against it -
-// same inline "are you sure" confirm pattern as DeleteCandidateButton on
-// the Candidates page. Jobs with candidates never render this (the
-// backend blocks that delete too, so this is a UX shortcut, not the only
-// guard).
-function DeleteJobButton({ job, onDeleted }) {
-  const [confirming, setConfirming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [error, setError] = useState('');
-
-  async function handleConfirm() {
-    setDeleting(true);
-    setError('');
-    try {
-      await api.delete(`/jobs/${job._id}`);
-      onDeleted(job._id);
-    } catch (err) {
-      setError(err.response?.data?.error || 'Could not delete job');
-      setDeleting(false);
-      setConfirming(false);
-    }
-  }
-
-  if (confirming) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.82rem' }}>
-        <span style={{ color: 'var(--muted)' }}>Delete "{job.title}"?</span>
-        <button
-          onClick={handleConfirm}
-          disabled={deleting}
-          style={{ background: 'var(--danger)', border: 'none', color: '#fff', borderRadius: 6, padding: '4px 10px', cursor: 'pointer' }}
-        >
-          {deleting ? 'Deleting…' : 'Confirm'}
-        </button>
-        <button
-          onClick={() => setConfirming(false)}
-          disabled={deleting}
-          style={{ background: 'none', border: '1px solid var(--line)', color: 'var(--muted)', borderRadius: 6, padding: '4px 10px', cursor: 'pointer' }}
-        >
-          Cancel
-        </button>
-        {error && <span className="error-text" style={{ marginLeft: 4 }}>{error}</span>}
-      </div>
-    );
-  }
-
-  return (
-    <button
-      onClick={() => setConfirming(true)}
-      title="Delete job posting"
-      style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', fontSize: '0.82rem' }}
-    >
-      Delete
-    </button>
-  );
-}
-
 export default function Jobs() {
   const { hasRole } = useAuth();
   const [jobs, setJobs] = useState([]);
@@ -197,11 +141,6 @@ export default function Jobs() {
     const status = job.status === 'open' ? 'closed' : 'open';
     await api.patch(`/jobs/${job._id}/status`, { status });
     loadJobs();
-  }
-
-  function handleJobDeleted(jobId) {
-    setJobs((prev) => prev.filter((j) => j._id !== jobId));
-    setPageInfo((prev) => ({ ...prev, total: Math.max(prev.total - 1, 0) }));
   }
 
   const canManage = hasRole('admin', 'recruiter');
@@ -265,8 +204,17 @@ export default function Jobs() {
                   <td>
                     <Link to={`/jobs/${j._id}`}>{j.title}</Link>
                   </td>
-                  <td style={{ maxWidth: 420, whiteSpace: 'pre-wrap' }}>
-                    {j.description.length > 160 ? j.description.slice(0, 160) + '…' : j.description}
+                  <td
+                    style={{
+                      maxWidth: 360,
+                      display: '-webkit-box',
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: 'vertical',
+                      overflow: 'hidden',
+                    }}
+                    title={j.description}
+                  >
+                    {j.description}
                   </td>
                   <td>
                     <span className={`badge ${j.status === 'open' ? 'clear' : 'flagged'}`}>{j.status}</span>
@@ -282,14 +230,9 @@ export default function Jobs() {
                   </td>
                   {canManage && (
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        <button onClick={() => toggleStatus(j)} style={{ fontSize: '0.8rem' }}>
-                          Mark {j.status === 'open' ? 'closed' : 'open'}
-                        </button>
-                        {(j.candidateCount ?? 0) === 0 && (
-                          <DeleteJobButton job={j} onDeleted={handleJobDeleted} />
-                        )}
-                      </div>
+                      <button onClick={() => toggleStatus(j)} style={{ fontSize: '0.8rem' }}>
+                        Mark {j.status === 'open' ? 'closed' : 'open'}
+                      </button>
                     </td>
                   )}
                 </tr>

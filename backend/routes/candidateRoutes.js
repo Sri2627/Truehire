@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const mammoth = require('mammoth');
 const Candidate = require('../models/Candidate');
 const Job = require('../models/Job');
+const Company = require('../models/Company');
 const FraudCompany = require('../models/FraudCompany');
 const Screening = require('../models/Screening');
 const UanRecord = require('../models/UanRecord');
@@ -17,6 +18,11 @@ const { extractSkillsFromText, MASTER_SKILLS } = require('../utils/skillExtracti
 const { guessEmailFromText, guessPhoneFromText } = require('../utils/contactExtraction');
 const { deriveSkillYearsFromTimeline, deriveTotalExperience } = require('../utils/timelineExtraction');
 const { runCareerChecks } = require('../utils/careerChecks');
+const { computeMatchScore } = require('../utils/jobMatching');
+const { computePanelOutcome } = require('../utils/panelOutcome');
+const { computeHiringRecommendation } = require('../utils/hiringRecommendation');
+const { PLAN_LIMITS, PLAN_LABELS } = require('../config/plans');
+const InterviewInvite = require('../models/InterviewInvite');
 
 const router = express.Router();
 
@@ -239,6 +245,18 @@ router.get('/stats', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), 
 // fails after the candidate record is created, the candidate is rolled
 // back so there's never an orphan "registered but never screened" record.
 // viewers are read-only, so this is admin/recruiter only.
+// Shared by POST / and POST /bulk - how many more candidates this tenant
+// can register before hitting its plan's cap. `limit: Infinity` (from an
+// enterprise/unrecognized plan) means unlimited.
+async function getCandidateQuota(companyId) {
+  const company = await Company.findById(companyId);
+  const limit = PLAN_LIMITS[company?.plan]?.candidates ?? PLAN_LIMITS.free.candidates;
+  const planLabel = PLAN_LABELS[company?.plan] || 'Free';
+  if (!Number.isFinite(limit)) return { limit: Infinity, remaining: Infinity, planLabel };
+  const current = await Candidate.countDocuments({ companyId });
+  return { limit, remaining: Math.max(limit - current, 0), planLabel };
+}
+
 router.post('/', requireRole('admin', 'recruiter'), upload.single('resume'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'A resume file (PDF or DOCX) is required to register a candidate' });
@@ -255,6 +273,16 @@ router.post('/', requireRole('admin', 'recruiter'), upload.single('resume'), asy
   if (!job) {
     fs.unlink(req.file.path, () => {});
     return res.status(404).json({ error: 'Job not found' });
+  }
+
+  // Plan enforcement - a company on the free plan (100 candidates) cannot
+  // register a 101st until they upgrade.
+  const quota = await getCandidateQuota(req.user.companyId);
+  if (quota.remaining <= 0) {
+    fs.unlink(req.file.path, () => {});
+    return res.status(403).json({
+      error: `Your ${quota.planLabel} plan allows up to ${quota.limit} candidate${quota.limit === 1 ? '' : 's'}. Upgrade your plan to register more.`,
+    });
   }
 
   let candidate;
@@ -310,12 +338,21 @@ router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', 
     return res.status(404).json({ error: 'Job not found' });
   }
 
+  // Plan enforcement - only process as many files as the remaining quota
+  // allows; the rest are reported per-file as skipped (same partial-
+  // success shape as an unreadable file below), not a hard all-or-nothing
+  // failure of the whole batch.
+  const quota = await getCandidateQuota(req.user.companyId);
+  const filesToProcess = Number.isFinite(quota.remaining) ? files.slice(0, quota.remaining) : files;
+  const filesOverQuota = Number.isFinite(quota.remaining) ? files.slice(quota.remaining) : [];
+  filesOverQuota.forEach((f) => fs.unlink(f.path, () => {}));
+
   // Processed sequentially rather than in parallel: each file already does
   // a decent amount of work (text extraction + fraud-list matching + a few
   // writes), and keeping it sequential avoids hammering the DB/CPU with 50
   // concurrent PDF parses from one request.
   const results = [];
-  for (const file of files) {
+  for (const file of filesToProcess) {
     let candidate;
     try {
       const extractedText = await extractResumeText(fs.readFileSync(file.path), file.originalname);
@@ -346,6 +383,14 @@ router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', 
       });
     }
   }
+
+  filesOverQuota.forEach((f) => {
+    results.push({
+      fileName: f.originalname,
+      success: false,
+      error: `Skipped — your ${quota.planLabel} plan allows up to ${quota.limit} candidate${quota.limit === 1 ? '' : 's'} and that limit was reached partway through this batch. Upgrade your plan to register the rest.`,
+    });
+  });
 
   const succeeded = results.filter((r) => r.success).length;
 
@@ -647,6 +692,38 @@ router.post('/:id/uan-check', requireRole('admin', 'recruiter'), async (req, res
   });
 
   res.json(await latestScreening.populate('fraudMatches.fraudCompanyId', 'name'));
+});
+
+// GET /candidates/:id/hiring-recommendation - the deterministic (no LLM)
+// "Strong Hire / Hire / Borderline / Reject" combiner: fraud + resume
+// career-consistency, job match score, and aggregated panel interview
+// feedback - see utils/hiringRecommendation.js for the actual formula
+// and why each weight re-normalizes over whichever signals exist yet.
+// Computed fresh on every call, not persisted - nothing to go stale
+// since it's just arithmetic over records that already exist.
+router.get('/:id/hiring-recommendation', requireRole('admin', 'recruiter', 'viewer'), async (req, res) => {
+  const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
+  if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
+
+  const [job, screening, invites] = await Promise.all([
+    Job.findOne({ _id: candidate.jobId, companyId: req.user.companyId }),
+    Screening.findOne({ candidateId: candidate._id }).sort({ screenedAt: -1 }),
+    InterviewInvite.find({ candidateId: candidate._id }),
+  ]);
+
+  const matchScore =
+    job && job.requiredSkills && job.requiredSkills.length ? computeMatchScore(job, candidate).score : null;
+
+  const invitesWithOutcome = invites.map((inv) => ({ panelOutcome: computePanelOutcome(inv.panelFeedback) }));
+
+  const recommendation = computeHiringRecommendation({
+    screening,
+    careerFlags: candidate.careerFlags,
+    matchScore,
+    invites: invitesWithOutcome,
+  });
+
+  res.json(recommendation);
 });
 
 module.exports = router;
