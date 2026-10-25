@@ -5,6 +5,11 @@ const jobSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true },
     description: { type: String, required: true, trim: true }, // the JD text
     status: { type: String, enum: ['open', 'closed'], default: 'open' },
+    location: { type: String, trim: true },
+    employmentType: { type: String, enum: ['full-time', 'part-time', 'contract', 'internship'] },
+    workMode: { type: String, enum: ['onsite', 'hybrid', 'remote'] },
+    salaryMinLpa: { type: Number, min: 0 },
+    salaryMaxLpa: { type: Number, min: 0 },
     // Used by utils/jobMatching.js to rank registered candidates. Optional -
     // a job with no requiredSkills set just can't be ranked yet (the
     // matches endpoint says so explicitly rather than returning a

@@ -45,7 +45,7 @@ const COLLECTIONS = [
           email: { bsonType: ['string', 'null'] },
           mobile: { bsonType: ['string', 'null'] },
           passwordHash: { bsonType: 'string' },
-          role: { enum: ['superadmin', 'admin', 'recruiter', 'viewer'] },
+          role: { enum: ['superadmin', 'admin', 'recruiter', 'viewer', 'jobseeker'] },
           mobileVerified: { bsonType: 'bool' },
           emailVerified: { bsonType: 'bool' },
         },
@@ -138,6 +138,23 @@ const COLLECTIONS = [
     indexes: [{ key: { candidateId: 1 } }],
   },
   {
+    name: 'job_applications',
+    validator: {
+      $jsonSchema: {
+        bsonType: 'object',
+        required: ['jobId', 'companyId', 'applicantId'],
+        properties: {
+          status: { enum: ['applied', 'reviewing', 'shortlisted', 'rejected', 'hired'] },
+        },
+      },
+    },
+    indexes: [
+      { key: { jobId: 1, applicantId: 1 }, options: { unique: true } },
+      { key: { companyId: 1, appliedAt: -1 } },
+      { key: { applicantId: 1, appliedAt: -1 } },
+    ],
+  },
+  {
     name: 'audit_log',
     validator: {
       $jsonSchema: {
@@ -198,6 +215,12 @@ async function seedAdmin(db) {
   const companiesCol = db.collection('companies');
   const usersCol = db.collection('users');
 
+  const adminEmail = process.env.SEED_ADMIN_EMAIL?.trim().toLowerCase();
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD;
+  if (!adminEmail || !adminPassword || adminPassword.length < 12) {
+    throw new Error('Set SEED_ADMIN_EMAIL and a unique SEED_ADMIN_PASSWORD of at least 12 characters in .env');
+  }
+
   let company = await companiesCol.findOne({ name: 'Default Company' });
   if (!company) {
     const result = await companiesCol.insertOne({
@@ -209,7 +232,6 @@ async function seedAdmin(db) {
     console.log('  + created "Default Company" tenant');
   }
 
-  const adminEmail = (process.env.SEED_ADMIN_EMAIL || 'admin@truehire.local').toLowerCase();
   const existingAdmin = await usersCol.findOne({ email: adminEmail });
 
   if (existingAdmin) {
@@ -217,7 +239,7 @@ async function seedAdmin(db) {
     return;
   }
 
-  const passwordHash = await bcrypt.hash(process.env.SEED_ADMIN_PASSWORD || 'ChangeMe123!', 12);
+  const passwordHash = await bcrypt.hash(adminPassword, 12);
 
   await usersCol.insertOne({
     name: process.env.SEED_ADMIN_NAME || 'Super Admin',
@@ -231,8 +253,7 @@ async function seedAdmin(db) {
     createdAt: new Date(),
   });
 
-  console.log(`  + seeded admin user: ${adminEmail} / ${process.env.SEED_ADMIN_PASSWORD || 'ChangeMe123!'}`);
-  console.log('    (change this password after first login)');
+  console.log(`  + seeded admin user: ${adminEmail}`);
 }
 
 async function run() {

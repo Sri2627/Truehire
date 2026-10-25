@@ -6,23 +6,21 @@ const mammoth = require('mammoth');
 const Candidate = require('../models/Candidate');
 const Job = require('../models/Job');
 const Company = require('../models/Company');
-const FraudCompany = require('../models/FraudCompany');
 const Screening = require('../models/Screening');
 const UanRecord = require('../models/UanRecord');
 const AuditLog = require('../models/AuditLog');
 const { requireAuth, requireRole, resolveCompanyScope } = require('../middleware/auth');
-const { upload, UPLOAD_DIR } = require('../middleware/upload');
+const { upload, UPLOAD_DIR, MAX_BULK_FILES, MAX_BULK_SIZE } = require('../middleware/upload');
 const { extractResumeText } = require('../utils/extractResumeText');
-const { screenResumeText } = require('../utils/screenText');
-const { extractSkillsFromText, MASTER_SKILLS } = require('../utils/skillExtraction');
 const { guessEmailFromText, guessPhoneFromText } = require('../utils/contactExtraction');
-const { deriveSkillYearsFromTimeline, deriveTotalExperience } = require('../utils/timelineExtraction');
-const { runCareerChecks } = require('../utils/careerChecks');
 const { computeMatchScore } = require('../utils/jobMatching');
 const { computePanelOutcome } = require('../utils/panelOutcome');
 const { computeHiringRecommendation } = require('../utils/hiringRecommendation');
 const { PLAN_LIMITS, PLAN_LABELS } = require('../config/plans');
 const InterviewInvite = require('../models/InterviewInvite');
+const JobApplication = require('../models/JobApplication');
+const { runScreening } = require('../utils/runScreening');
+const { removeUploadedFile } = require('../utils/removeUploadedFile');
 
 const router = express.Router();
 
@@ -50,83 +48,6 @@ function guessNameFromFilename(originalName) {
     .split(' ')
     .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : w))
     .join(' ');
-}
-
-// Shared by POST /candidates and POST /candidates/:id/screen: extracts the
-// uploaded resume's text, matches it against the caller's tenant fraud
-// list, records a Screening, and derives skills/experience/career-flags
-// for job matching (utils/skillExtraction.js, utils/timelineExtraction.js,
-// utils/careerChecks.js). Returns the populated screening doc.
-async function runScreening({ candidate, file, userId, extractedText: preExtracted }) {
-  const extractedText =
-    preExtracted !== undefined ? preExtracted : await extractResumeText(fs.readFileSync(file.path), file.originalname);
-
-  // Checks the tenant's own manually-added entries PLUS the global,
-  // platform-wide fake-institutions list (companyId: null) - see
-  // models/FraudCompany.js. Without the $or here, a brand new tenant with
-  // no manual entries of its own would screen against nothing at all and
-  // every resume would come back "clear" for the wrong reason: not
-  // because it's clean, but because there was nothing to check it against.
-  const fraudCompanies = await FraudCompany.find({
-    $or: [{ companyId: candidate.companyId }, { companyId: null }],
-  });
-  const { verdict, fraudMatches } = screenResumeText(extractedText, fraudCompanies);
-
-  // Skills: dictionary presence + any explicitly stated years, merged with
-  // timeline-derived years for everything the resume didn't state a
-  // number for. Stated years (if the resume actually says "5 years of
-  // React") win over derived ones - that's the more direct claim.
-  const stated = extractSkillsFromText(extractedText);
-  const derivedByName = new Map(deriveSkillYearsFromTimeline(extractedText, MASTER_SKILLS).map((s) => [s.name, s]));
-
-  const skills = stated.map((s) => {
-    if (s.years != null) return { name: s.name, years: s.years, source: 'stated' };
-    const derived = derivedByName.get(s.name);
-    if (derived) return { name: s.name, years: derived.years, source: 'timeline_derived' };
-    return { name: s.name, years: null, source: null };
-  });
-
-  const totalYearsExperience = deriveTotalExperience(extractedText);
-  const { overlaps, growthFlags } = runCareerChecks(extractedText);
-  const careerFlags = [
-    ...overlaps.map((detail) => ({ type: 'employment_overlap', detail })),
-    ...growthFlags.map((detail) => ({ type: 'unrealistic_growth', detail })),
-  ];
-
-  candidate.extractedText = extractedText;
-  candidate.resumeFileKey = file.filename;
-  candidate.skills = skills;
-  if (totalYearsExperience != null) {
-    candidate.totalYearsExperience = totalYearsExperience;
-    candidate.totalYearsExperienceSource = 'timeline_derived';
-  }
-  candidate.careerFlags = careerFlags;
-  await candidate.save();
-
-  const screening = await Screening.create({
-    candidateId: candidate._id,
-    verdict,
-    fraudMatches,
-    fraudListSize: fraudCompanies.length,
-    screenedBy: userId,
-  });
-
-  await AuditLog.create({
-    userId,
-    action: 'upload_resume',
-    entityType: 'candidate',
-    entityId: candidate._id,
-    metadata: {
-      verdict,
-      matchCount: fraudMatches.length,
-      fraudListSize: fraudCompanies.length,
-      fileName: file.originalname,
-      skillCount: skills.length,
-      careerFlagCount: careerFlags.length,
-    },
-  });
-
-  return screening.populate('fraudMatches.fraudCompanyId', 'name');
 }
 
 // GET /candidates - list/search candidates for the caller's company,
@@ -265,27 +186,35 @@ router.post('/', requireRole('admin', 'recruiter'), upload.single('resume'), asy
   const { name, email, phone, jobId } = req.body;
 
   if (!jobId || !mongoose.isValidObjectId(jobId)) {
-    fs.unlink(req.file.path, () => {});
+    removeUploadedFile(req.file.path);
     return res.status(400).json({ error: 'A jobId is required — register the candidate against a job posting' });
   }
 
-  const job = await Job.findOne({ _id: jobId, companyId: req.user.companyId });
+  let job;
+  let quota;
+  try {
+    job = await Job.findOne({ _id: jobId, companyId: req.user.companyId });
+    if (job) quota = await getCandidateQuota(req.user.companyId);
+  } catch (err) {
+    removeUploadedFile(req.file.path);
+    throw err;
+  }
   if (!job) {
-    fs.unlink(req.file.path, () => {});
+    removeUploadedFile(req.file.path);
     return res.status(404).json({ error: 'Job not found' });
   }
 
   // Plan enforcement - a company on the free plan (100 candidates) cannot
   // register a 101st until they upgrade.
-  const quota = await getCandidateQuota(req.user.companyId);
   if (quota.remaining <= 0) {
-    fs.unlink(req.file.path, () => {});
+    removeUploadedFile(req.file.path);
     return res.status(403).json({
       error: `Your ${quota.planLabel} plan allows up to ${quota.limit} candidate${quota.limit === 1 ? '' : 's'}. Upgrade your plan to register more.`,
     });
   }
 
   let candidate;
+  let screening;
   try {
     // Extracted once up front (rather than letting runScreening extract it
     // again below) so a name/email/phone left blank on the form can fall
@@ -302,39 +231,57 @@ router.post('/', requireRole('admin', 'recruiter'), upload.single('resume'), asy
       createdBy: req.user.id,
     });
 
-    const screening = await runScreening({ candidate, file: req.file, userId: req.user.id, extractedText });
+    screening = await runScreening({ candidate, file: req.file, userId: req.user.id, extractedText });
     res.status(201).json({ candidate, screening });
   } catch (err) {
-    if (req.file) fs.unlink(req.file.path, () => {});
-    if (candidate) await Candidate.deleteOne({ _id: candidate._id });
-    res.status(400).json({ error: err.message || 'Could not register candidate' });
+    if (req.file) removeUploadedFile(req.file.path);
+    if (candidate) {
+      await Screening.deleteMany({ candidateId: candidate._id });
+      await Candidate.deleteOne({ _id: candidate._id });
+    }
+    if (err.code === 11000) return res.status(409).json({ error: 'A candidate with that identifier already exists' });
+    if (err.statusCode === 400) return res.status(400).json({ error: err.message });
+    console.error('[candidate upload] failed:', err.message);
+    res.status(500).json({ error: 'Could not register candidate' });
   }
 });
 
 // POST /candidates/bulk - register + screen many resumes at once against a
-// single job posting. Field name "resumes" (multipart, up to 50 files per
+// single job posting. Field name "resumes" (multipart, up to 20 files per
 // request), plus a jobId. Each file becomes its own candidate: name is
 // guessed from the file name, email from the resume text if present, and
 // each one is screened against the fraud watch-list exactly like a single
 // upload. One bad file (unreadable, wrong type) does not fail the whole
 // batch — it's reported per-file in the response so the rest still land.
 // admin/recruiter only, same as single-candidate registration.
-router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', 50), async (req, res) => {
+router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', MAX_BULK_FILES), async (req, res) => {
   const files = req.files || [];
 
   if (files.length === 0) {
     return res.status(400).json({ error: 'At least one resume file (PDF or DOCX) is required' });
   }
+  if (files.reduce((total, file) => total + file.size, 0) > MAX_BULK_SIZE) {
+    files.forEach((file) => removeUploadedFile(file.path));
+    return res.status(413).json({ error: 'A bulk upload may not exceed 50MB total' });
+  }
 
   const { jobId } = req.body;
   if (!jobId || !mongoose.isValidObjectId(jobId)) {
-    files.forEach((f) => fs.unlink(f.path, () => {}));
+    files.forEach((f) => removeUploadedFile(f.path));
     return res.status(400).json({ error: 'A jobId is required — bulk-upload resumes against a job posting' });
   }
 
-  const job = await Job.findOne({ _id: jobId, companyId: req.user.companyId });
+  let job;
+  let quota;
+  try {
+    job = await Job.findOne({ _id: jobId, companyId: req.user.companyId });
+    if (job) quota = await getCandidateQuota(req.user.companyId);
+  } catch (err) {
+    files.forEach((file) => removeUploadedFile(file.path));
+    throw err;
+  }
   if (!job) {
-    files.forEach((f) => fs.unlink(f.path, () => {}));
+    files.forEach((f) => removeUploadedFile(f.path));
     return res.status(404).json({ error: 'Job not found' });
   }
 
@@ -342,14 +289,13 @@ router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', 
   // allows; the rest are reported per-file as skipped (same partial-
   // success shape as an unreadable file below), not a hard all-or-nothing
   // failure of the whole batch.
-  const quota = await getCandidateQuota(req.user.companyId);
   const filesToProcess = Number.isFinite(quota.remaining) ? files.slice(0, quota.remaining) : files;
   const filesOverQuota = Number.isFinite(quota.remaining) ? files.slice(quota.remaining) : [];
-  filesOverQuota.forEach((f) => fs.unlink(f.path, () => {}));
+  filesOverQuota.forEach((f) => removeUploadedFile(f.path));
 
   // Processed sequentially rather than in parallel: each file already does
   // a decent amount of work (text extraction + fraud-list matching + a few
-  // writes), and keeping it sequential avoids hammering the DB/CPU with 50
+  // writes), and keeping it sequential avoids hammering the DB/CPU with 20
   // concurrent PDF parses from one request.
   const results = [];
   for (const file of filesToProcess) {
@@ -374,8 +320,11 @@ router.post('/bulk', requireRole('admin', 'recruiter'), upload.array('resumes', 
         screening,
       });
     } catch (err) {
-      fs.unlink(file.path, () => {});
-      if (candidate) await Candidate.deleteOne({ _id: candidate._id });
+      removeUploadedFile(file.path);
+      if (candidate) {
+        await Screening.deleteMany({ candidateId: candidate._id });
+        await Candidate.deleteOne({ _id: candidate._id });
+      }
       results.push({
         fileName: file.originalname,
         success: false,
@@ -500,14 +449,14 @@ router.post(
     try {
       const candidate = await Candidate.findOne({ _id: req.params.id, companyId: req.user.companyId });
       if (!candidate) {
-        fs.unlink(req.file.path, () => {});
+        removeUploadedFile(req.file.path);
         return res.status(404).json({ error: 'Candidate not found' });
       }
 
       const screening = await runScreening({ candidate, file: req.file, userId: req.user.id });
       res.status(201).json({ candidate, screening });
     } catch (err) {
-      if (req.file) fs.unlink(req.file.path, () => {});
+      if (req.file) removeUploadedFile(req.file.path);
       res.status(400).json({ error: err.message || 'Screening failed' });
     }
   }
@@ -583,10 +532,11 @@ router.delete('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
   if (!candidate) return res.status(404).json({ error: 'Candidate not found' });
 
   await Screening.deleteMany({ candidateId: candidate._id });
+  await JobApplication.updateMany({ candidateId: candidate._id }, { $unset: { candidateId: 1 } });
 
   if (candidate.resumeFileKey) {
     const filePath = path.join(UPLOAD_DIR, candidate.resumeFileKey);
-    fs.unlink(filePath, () => {}); // best-effort; ignore if already gone
+    removeUploadedFile(filePath);
   }
 
   await Candidate.deleteOne({ _id: candidate._id });

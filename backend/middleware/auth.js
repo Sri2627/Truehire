@@ -50,6 +50,9 @@ function resolveCompanyScope(req, res, next) {
   }
 
   if (req.user.role !== 'superadmin') {
+    if (!req.user.companyId && req.user.role !== 'jobseeker') {
+      return res.status(403).json({ error: 'This account is not assigned to an institution' });
+    }
     return next();
   }
 

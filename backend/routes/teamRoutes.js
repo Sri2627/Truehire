@@ -43,21 +43,34 @@ router.get('/', requireRole('admin', 'superadmin'), async (req, res) => {
 
 // POST /team - add a new teammate to the current institution (the caller's
 // own company for a tenant admin, or whichever institution a superadmin
-// has selected). Unlike POST /auth/register (self-serve, open), this
+// has selected). Unlike the public jobseeker signup endpoint, this
 // always pins companyId to req.user.companyId - never something the
 // request body can override.
 router.post('/', requireRole('admin', 'superadmin'), async (req, res) => {
   try {
     const { name, email, mobile, password, role } = req.body;
+    if ((email != null && typeof email !== 'string') || (mobile != null && typeof mobile !== 'string')) {
+      return res.status(400).json({ error: 'email and mobile must be strings' });
+    }
+    const normalizedEmail = email?.trim().toLowerCase() || undefined;
+    const normalizedMobile = mobile?.trim() || undefined;
 
-    if (!name || !password || (!email && !mobile)) {
+    if (typeof name !== 'string' || !name.trim() || typeof password !== 'string' || (!normalizedEmail && !normalizedMobile)) {
       return res.status(400).json({ error: 'name, password, and email or mobile are required' });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
     if (role && !TEAM_ROLES.includes(role)) {
       return res.status(400).json({ error: `role must be one of: ${TEAM_ROLES.join(', ')}` });
     }
 
-    const existing = await User.findOne({ $or: [{ email }, { mobile }] });
+    const existing = await User.findOne({
+      $or: [
+        ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
+        ...(normalizedMobile ? [{ mobile: normalizedMobile }] : []),
+      ],
+    });
     if (existing) {
       return res.status(409).json({ error: 'A user with that email or mobile already exists' });
     }
@@ -66,8 +79,8 @@ router.post('/', requireRole('admin', 'superadmin'), async (req, res) => {
 
     const user = await User.create({
       name,
-      email,
-      mobile,
+      email: normalizedEmail,
+      mobile: normalizedMobile,
       passwordHash,
       role: role || 'recruiter',
       companyId: req.user.companyId,
@@ -76,7 +89,9 @@ router.post('/', requireRole('admin', 'superadmin'), async (req, res) => {
     const { passwordHash: _omit, ...safeUser } = user.toObject();
     res.status(201).json(safeUser);
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Could not add user' });
+    if (err.code === 11000) return res.status(409).json({ error: 'A user with that email or mobile already exists' });
+    console.error('[team] failed to add user:', err.message);
+    res.status(500).json({ error: 'Could not add user' });
   }
 });
 

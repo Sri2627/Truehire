@@ -125,6 +125,59 @@ export default function JobFormFields({ form, setForm, skills, setSkills, autoFo
         placeholder="e.g. 3"
       />
 
+      <div className="job-form-meta-grid">
+        <div>
+          <label style={{ marginTop: 10 }}>Location</label>
+          <input
+            value={form.location || ''}
+            onChange={(e) => setForm({ ...form, location: e.target.value })}
+            placeholder="e.g. Bengaluru, Karnataka"
+          />
+        </div>
+        <div>
+          <label style={{ marginTop: 10 }}>Work mode</label>
+          <select value={form.workMode || ''} onChange={(e) => setForm({ ...form, workMode: e.target.value })}>
+            <option value="">Not specified</option>
+            <option value="onsite">On-site</option>
+            <option value="hybrid">Hybrid</option>
+            <option value="remote">Remote</option>
+          </select>
+        </div>
+        <div>
+          <label style={{ marginTop: 10 }}>Employment type</label>
+          <select value={form.employmentType || ''} onChange={(e) => setForm({ ...form, employmentType: e.target.value })}>
+            <option value="">Not specified</option>
+            <option value="full-time">Full-time</option>
+            <option value="part-time">Part-time</option>
+            <option value="contract">Contract</option>
+            <option value="internship">Internship</option>
+          </select>
+        </div>
+        <div className="job-form-salary">
+          <label style={{ marginTop: 10 }}>Annual salary range (LPA, optional)</label>
+          <div className="job-form-meta-grid">
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={form.salaryMinLpa ?? ''}
+              onChange={(e) => setForm({ ...form, salaryMinLpa: e.target.value })}
+              placeholder="Minimum"
+              aria-label="Minimum annual salary in LPA"
+            />
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              value={form.salaryMaxLpa ?? ''}
+              onChange={(e) => setForm({ ...form, salaryMaxLpa: e.target.value })}
+              placeholder="Maximum"
+              aria-label="Maximum annual salary in LPA"
+            />
+          </div>
+        </div>
+      </div>
+
       <RequiredSkillsEditor skills={skills} onChange={setSkills} />
 
       <label style={{ marginTop: 14 }}>Interview panel emails (optional — CC'd on every interview invitation sent for matches against this job)</label>

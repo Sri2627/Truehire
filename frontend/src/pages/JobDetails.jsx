@@ -38,6 +38,8 @@ function JobView({ job, canManage, onEdit, onToggleStatus, onDeleted }) {
               Created {new Date(job.createdAt).toLocaleDateString()} ·{' '}
               <Link to={`/candidates?jobId=${job._id}`}>{job.candidateCount ?? 0} candidate{job.candidateCount === 1 ? '' : 's'}</Link>
               {' · '}
+              <Link to={`/jobs/${job._id}/applications`}>View applications →</Link>
+              {' · '}
               <Link to={`/jobs/${job._id}/matches`}>View matches →</Link>
             </p>
           </div>
@@ -55,6 +57,20 @@ function JobView({ job, canManage, onEdit, onToggleStatus, onDeleted }) {
 
         <h3 style={{ marginTop: 24 }}>Description</h3>
         <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{job.description}</p>
+        {(job.location || job.workMode || job.employmentType || job.salaryMinLpa != null || job.salaryMaxLpa != null) && (
+          <div className="job-listing-meta" style={{ marginTop: 16 }}>
+            {job.location && <span>{job.location}</span>}
+            {job.workMode && <span>{job.workMode}</span>}
+            {job.employmentType && <span>{job.employmentType}</span>}
+            {(job.salaryMinLpa != null || job.salaryMaxLpa != null) && (
+              <span className="job-salary">
+                {job.salaryMinLpa != null && job.salaryMaxLpa != null
+                  ? `₹${job.salaryMinLpa}–${job.salaryMaxLpa} LPA`
+                  : job.salaryMinLpa != null ? `From ₹${job.salaryMinLpa} LPA` : `Up to ₹${job.salaryMaxLpa} LPA`}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -131,6 +147,11 @@ function JobEdit({ job, onSaved, onCancel }) {
     description: job.description,
     minExperienceYears: job.minExperienceYears ?? '',
     interviewPanel: panelStringFromJob(job),
+    location: job.location || '',
+    employmentType: job.employmentType || '',
+    workMode: job.workMode || '',
+    salaryMinLpa: job.salaryMinLpa ?? '',
+    salaryMaxLpa: job.salaryMaxLpa ?? '',
   });
   const [skills, setSkills] = useState(skillRowsFromJob(job));
   const [error, setError] = useState('');

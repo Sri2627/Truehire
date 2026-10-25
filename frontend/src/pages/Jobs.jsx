@@ -11,7 +11,10 @@ import { useAuth } from '../context/AuthContext.jsx';
 // submit, close. Keeps the Jobs page itself to just a list + a button,
 // instead of an always-open form taking up space above the table.
 function NewJobModal({ onClose, onCreated }) {
-  const [form, setForm] = useState({ title: '', description: '', minExperienceYears: '', interviewPanel: '' });
+  const [form, setForm] = useState({
+    title: '', description: '', minExperienceYears: '', interviewPanel: '',
+    location: '', employmentType: '', workMode: '', salaryMinLpa: '', salaryMaxLpa: '',
+  });
   const [skills, setSkills] = useState([]);
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);

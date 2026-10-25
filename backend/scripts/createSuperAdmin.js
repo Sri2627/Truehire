@@ -7,8 +7,7 @@
 // Usage:
 //   node scripts/createSuperAdmin.js you@platform.local YourPassword123
 //   (or just: node scripts/createSuperAdmin.js
-//    -> uses SEED_SUPERADMIN_EMAIL / SEED_SUPERADMIN_PASSWORD env vars,
-//    falling back to superadmin@truehire.local / ChangeMe123!)
+//    -> uses SEED_SUPERADMIN_EMAIL / SEED_SUPERADMIN_PASSWORD env vars)
 //
 // Doesn't need any special Atlas privileges (no dbAdmin, no
 // bypassDocumentValidation) - see the isSuperAdmin note on the write
@@ -35,7 +34,7 @@ async function patchUsersValidator(db) {
             email:        { bsonType: ['string', 'null'] },
             mobile:       { bsonType: ['string', 'null'] },
             passwordHash: { bsonType: 'string' },
-            role:         { enum: ['superadmin', 'admin', 'recruiter', 'viewer'] },
+            role:         { enum: ['superadmin', 'admin', 'recruiter', 'viewer', 'jobseeker'] },
             mobileVerified: { bsonType: 'bool' },
             emailVerified:  { bsonType: 'bool' },
             isSuperAdmin:   { bsonType: 'bool' },
@@ -60,8 +59,9 @@ async function patchUsersValidator(db) {
 }
 
 async function run() {
-  const email    = (process.argv[2] || process.env.SEED_SUPERADMIN_EMAIL    || 'superadmin@truehire.local').toLowerCase();
-  const password =  process.argv[3] || process.env.SEED_SUPERADMIN_PASSWORD || 'ChangeMe123!';
+  const email = (process.argv[2] || process.env.SEED_SUPERADMIN_EMAIL || '').trim().toLowerCase();
+  const password = process.argv[3] || process.env.SEED_SUPERADMIN_PASSWORD;
+  if (!email) throw new Error('Provide a superadmin email as an argument or set SEED_SUPERADMIN_EMAIL');
 
   const connection = await connectDB();
   const db = connection.db;
@@ -102,7 +102,7 @@ async function run() {
       // of the known roles) - never write role: 'superadmin' directly.
       // The users collection's server-side JSON schema validator on most
       // Atlas connections still only allows role to be one of
-      // ['admin','recruiter','viewer'] (patchUsersValidator above needs
+      // ['admin','recruiter','viewer','jobseeker'] (patchUsersValidator above needs
       // dbAdmin to fix that, which most Atlas DB users don't have) - and
       // under the default 'strict' validation level, MongoDB re-checks
       // the *whole* document on every update, so setting role:
@@ -120,6 +120,9 @@ async function run() {
       console.log(`  ✓ Updated "${email}": role "${previousRole}" kept as "${nextRole}", isSuperAdmin: true, companyId cleared`);
     }
   } else {
+    if (!password || password.length < 12) {
+      throw new Error('Creating a superadmin requires a unique password of at least 12 characters');
+    }
     const passwordHash = await bcrypt.hash(password, 12);
     // Same reasoning as the promotion path above: role stays 'admin'
     // (schema-valid everywhere), isSuperAdmin: true is what actually
@@ -136,8 +139,7 @@ async function run() {
       companyId:      null,
       createdAt:      new Date(),
     });
-    console.log(`  ✓ Created superadmin user: ${email} / ${password}`);
-    console.log('    (change this password after first login)');
+    console.log(`  ✓ Created superadmin user: ${email}`);
   }
 
   console.log('\nDone. Log in with the superadmin account — you will land on the Institutions screen.');

@@ -80,6 +80,21 @@ export function AuthProvider({ children }) {
     return data.user;
   }
 
+  async function signupJobseeker({ name, email, mobile, password }) {
+    const { data } = await api.post('/auth/jobseeker-signup', { name, email, mobile, password });
+    localStorage.setItem('th_access_token', data.accessToken);
+    localStorage.setItem('th_refresh_token', data.refreshToken);
+    localStorage.setItem('th_user', JSON.stringify(data.user));
+    setUser(data.user);
+    return data.user;
+  }
+
+  function updateUserProfile(updatedUser) {
+    const nextUser = { ...user, ...updatedUser };
+    localStorage.setItem('th_user', JSON.stringify(nextUser));
+    setUser(nextUser);
+  }
+
   function logout() {
     localStorage.removeItem('th_access_token');
     localStorage.removeItem('th_refresh_token');
@@ -107,7 +122,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, signup, logout, hasRole, selectedInstitution, selectInstitution }}>
+    <AuthContext.Provider value={{ user, login, signup, signupJobseeker, updateUserProfile, logout, hasRole, selectedInstitution, selectInstitution }}>
       {children}
     </AuthContext.Provider>
   );

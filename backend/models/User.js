@@ -9,7 +9,7 @@ const mongoose = require('mongoose');
 // admin      - manage team, fraud watch-list, overrides (within own company)
 // recruiter  - screen candidates, draft invites
 // viewer     - read-only access
-const ROLES = ['superadmin', 'admin', 'recruiter', 'viewer'];
+const ROLES = ['superadmin', 'admin', 'recruiter', 'viewer', 'jobseeker'];
 
 const userSchema = new mongoose.Schema(
   {
@@ -43,6 +43,31 @@ const userSchema = new mongoose.Schema(
     // ignored by it, not rejected.
     isSuperAdmin: { type: Boolean, default: false },
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company' },
+    profile: {
+      headline: { type: String, trim: true, maxlength: 120 },
+      location: { type: String, trim: true, maxlength: 120 },
+      summary: { type: String, trim: true, maxlength: 2000 },
+      skills: [{ type: String, trim: true, maxlength: 60 }],
+      experience: [{
+        title: { type: String, trim: true, maxlength: 120 },
+        company: { type: String, trim: true, maxlength: 120 },
+        startDate: { type: String, trim: true, maxlength: 30 },
+        endDate: { type: String, trim: true, maxlength: 30 },
+        description: { type: String, trim: true, maxlength: 1500 },
+      }],
+      education: [{
+        degree: { type: String, trim: true, maxlength: 120 },
+        institution: { type: String, trim: true, maxlength: 120 },
+        graduationYear: { type: String, trim: true, maxlength: 20 },
+      }],
+      resume: {
+        fileKey: { type: String, trim: true },
+        originalName: { type: String, trim: true, maxlength: 255 },
+        uploadedAt: { type: Date },
+      },
+      linkedin: { type: String, trim: true, maxlength: 300 },
+      portfolio: { type: String, trim: true, maxlength: 300 },
+    },
     lastLoginAt: { type: Date },
     // Forgot-password flow: a short-lived 6-digit code, stored hashed
     // (never in plaintext) alongside its expiry. Both are cleared once

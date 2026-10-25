@@ -33,7 +33,8 @@ export default function Login() {
       // superadmin, which lands on its own platform-wide dashboard
       // instead of a tenant dashboard.
       const dest = location.state?.from;
-      const fallback = loggedInUser?.role === 'superadmin' ? '/superadmin' : '/dashboard';
+      const fallback =
+        loggedInUser?.role === 'superadmin' ? '/superadmin' : loggedInUser?.role === 'jobseeker' ? '/jobseeker-dashboard' : '/dashboard';
       const path = dest ? `${dest.pathname}${dest.search || ''}` : fallback;
       navigate(path, { replace: true });
     } catch (err) {
@@ -105,6 +106,9 @@ export default function Login() {
 
           <p className="sub" style={{ marginTop: 16 }}>
             New institution? <Link to="/pricing">Create an account</Link>
+          </p>
+          <p className="sub">
+            Looking for work? <Link to="/jobseeker-signup">Create a jobseeker account</Link> or <Link to="/careers">browse jobs</Link>
           </p>
         </form>
       </div>

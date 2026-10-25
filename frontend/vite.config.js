@@ -40,6 +40,7 @@ export default defineConfig({
       '/auth': apiProxy(),
       '/jobs': apiProxy(),
       '/candidates': apiProxy(),
+      '/applications': apiProxy(),
       '/team': apiProxy(),
       '/fraud': apiProxy(),
       '/institutions': apiProxy(),

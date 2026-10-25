@@ -54,7 +54,7 @@ async function sendMail({ to, cc, subject, text }) {
   });
 
   if (!usingRealSmtp) {
-    console.log('[mailer] SMTP not configured - simulated send only:', info.message.toString());
+    console.log('[mailer] SMTP not configured - simulated send only:', { to, subject });
   }
 
   return { delivered: usingRealSmtp };

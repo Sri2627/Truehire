@@ -24,10 +24,10 @@
  */
 require('dotenv').config();
 const path = require('path');
-const XLSX = require('xlsx');
 const mongoose = require('mongoose');
 const { connectDB } = require('../config/db');
 const { normalizeCompanyName } = require('../utils/normalizeCompanyName');
+const { readFraudSpreadsheet } = require('../utils/readFraudSpreadsheet');
 
 const DEFAULT_FILE = path.join(__dirname, '..', 'data', 'fake_institutions.xlsx');
 const NAME_COLUMN_CANDIDATES = ['fake institutions', 'name', 'company', 'company name'];
@@ -90,9 +90,7 @@ async function run() {
   }
 
   console.log('\nReading workbook...');
-  const workbook = XLSX.readFile(filePath);
-  const sheetName = workbook.SheetNames[0];
-  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '' });
+  const { sheetName, rows } = await readFraudSpreadsheet(filePath);
 
   if (rows.length === 0) {
     console.log('No rows found in the first sheet - nothing to do.');

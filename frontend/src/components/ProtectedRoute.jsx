@@ -14,10 +14,14 @@ export default function ProtectedRoute({ children, roles }) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
+  if (user.role === 'jobseeker' && (!roles || !roles.includes('jobseeker'))) {
+    return <Navigate to="/jobseeker-dashboard" replace />;
+  }
+
   if (roles && !roles.includes(user.role)) {
     // A superadmin hitting a route it doesn't have access to (e.g. /team)
     // should land on its own platform dashboard, not a tenant's dashboard.
-    const fallback = user.role === 'superadmin' ? '/superadmin' : '/dashboard';
+    const fallback = user.role === 'superadmin' ? '/superadmin' : user.role === 'jobseeker' ? '/jobseeker-dashboard' : '/dashboard';
     return <Navigate to={fallback} replace />;
   }
 

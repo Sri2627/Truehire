@@ -18,6 +18,14 @@ import Institutions from './pages/Institutions.jsx';
 import SuperAdminDashboard from './pages/SuperAdminDashboard.jsx';
 import PlatformFraudList from './pages/PlatformFraudList.jsx';
 import Revenue from './pages/Revenue.jsx';
+import JobseekerSignup from './pages/JobseekerSignup.jsx';
+import PublicJobs from './pages/PublicJobs.jsx';
+import MyApplications from './pages/MyApplications.jsx';
+import JobseekerDashboard from './pages/JobseekerDashboard.jsx';
+import ResumeBuilder from './pages/ResumeBuilder.jsx';
+import JobseekerProfile from './pages/JobseekerProfile.jsx';
+import JobApplications from './pages/JobApplications.jsx';
+import Home from './pages/Home.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 
 // A superadmin has no institution's dashboard of its own to land on - it
@@ -26,18 +34,53 @@ import ProtectedRoute from './components/ProtectedRoute.jsx';
 // else keeps the normal default of /dashboard.
 function DefaultRedirect() {
   const { user } = useAuth();
-  const target = user?.role === 'superadmin' ? '/superadmin' : '/dashboard';
+  const target = user?.role === 'superadmin' ? '/superadmin' : user?.role === 'jobseeker' ? '/jobseeker-dashboard' : '/dashboard';
   return <Navigate to={target} replace />;
 }
 
 export default function App() {
   return (
     <Routes>
+      <Route path="/" element={<Home />} />
       <Route path="/login" element={<Login />} />
       <Route path="/pricing" element={<Pricing />} />
       <Route path="/signup" element={<Signup />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/careers" element={<PublicJobs />} />
+      <Route path="/jobseeker-signup" element={<JobseekerSignup />} />
+      <Route
+        path="/jobseeker-dashboard"
+        element={
+          <ProtectedRoute roles={['jobseeker']}>
+            <JobseekerDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/profile"
+        element={
+          <ProtectedRoute roles={['jobseeker']}>
+            <JobseekerProfile />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/resume-builder"
+        element={
+          <ProtectedRoute roles={['jobseeker']}>
+            <ResumeBuilder />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/my-applications"
+        element={
+          <ProtectedRoute roles={['jobseeker']}>
+            <MyApplications />
+          </ProtectedRoute>
+        }
+      />
 
       <Route
         path="/dashboard"
@@ -71,6 +114,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <JobMatches />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/jobs/:id/applications"
+        element={
+          <ProtectedRoute roles={['admin', 'recruiter', 'viewer', 'superadmin']}>
+            <JobApplications />
           </ProtectedRoute>
         }
       />

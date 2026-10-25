@@ -17,8 +17,8 @@ truehire/
 cd backend
 npm install
 cp .env.example .env
-# edit .env: set MONGO_URI to your local or Atlas connection string,
-# and set real JWT_ACCESS_SECRET / JWT_REFRESH_SECRET values
+# edit .env: set MONGO_URI, two different random JWT secrets (32+ chars),
+# SEED_ADMIN_EMAIL / SEED_ADMIN_PASSWORD (12+ chars), and CORS_ORIGINS
 ```
 
 ### Run the init script (creates the "tables" + first admin login)
@@ -32,13 +32,14 @@ npm run init-db
 What it does:
 - Creates every collection (`users`, `companies`, `fraud_companies`,
   `candidates`, `screenings`, `uan_records`, `interview_invites`,
+  `job_applications`,
   `audit_log`) with a JSON-schema validator, so MongoDB itself rejects
   malformed documents.
 - Builds the indexes each collection needs (unique email/mobile on
   `users`, lookup indexes on the rest).
 - Creates a "Default Company" tenant and seeds one **admin** user using
-  the `SEED_ADMIN_*` values from `.env` (defaults to
-  `admin@truehire.local` / `ChangeMe123!` if you don't set them).
+  `SEED_ADMIN_EMAIL` and `SEED_ADMIN_PASSWORD` from `.env`; the script
+  refuses to seed a default or short password.
 - Safe to re-run — it skips anything that already exists and just
   refreshes the validators.
 
@@ -72,8 +73,13 @@ The API listens on `http://localhost:5000` (change `PORT` in `.env`).
 
 ### Auth flow (JWT, role-based)
 
-- `POST /auth/register` — create a user (name, password, email or mobile,
-  role, companyId)
+- `POST /auth/signup` — public institution signup; the first account is
+  always an institution admin.
+- `POST /auth/jobseeker-signup` — public signup that assigns only the
+  `jobseeker` role and creates no institution membership.
+- `POST /auth/register` — authenticated admin endpoint for adding only
+  tenant-scoped admin/recruiter/viewer accounts. Public role or tenant
+  selection is not allowed; use `/team` for normal invitations.
 - `POST /auth/login` — `{ identifier, password }` → `{ accessToken,
   refreshToken, user }`
 - `POST /auth/refresh` — exchange a refresh token for a new access token
@@ -82,9 +88,9 @@ The API listens on `http://localhost:5000` (change `PORT` in `.env`).
 
 Every protected route checks the role **on the server**
 (`middleware/auth.js` → `requireAuth` + `requireRole(...)`), not just in
-the UI. Roles: `superadmin`, `admin`, `recruiter`, `viewer` — the first
-three matching the spec's Team & Roles screen, plus a platform-level
-`superadmin` (see below).
+the UI. Roles are `superadmin`, `admin`, `recruiter`, `viewer`, and
+`jobseeker`. Institution team roles are admin/recruiter/viewer; superadmin
+is platform-only and jobseeker accounts are separate from employers.
 
 ### Creating the platform superadmin
 
@@ -96,9 +102,9 @@ out through the public signup/register forms — you create it once from
 the command line:
 
 ```bash
-npm run create-superadmin you@platform.local YourPassword123
-# or with no args: uses SEED_SUPERADMIN_EMAIL / SEED_SUPERADMIN_PASSWORD
-# from .env, falling back to superadmin@truehire.local / ChangeMe123!
+npm run create-superadmin you@platform.local YourUniquePassword123
+# Or set SEED_SUPERADMIN_EMAIL / SEED_SUPERADMIN_PASSWORD in .env.
+# New superadmin passwords must be at least 12 characters.
 ```
 
 Safe to re-run — running it again on an existing email just checks it's
@@ -184,6 +190,9 @@ used, now run server-side and persisted per candidate.
   that particular scan ran against) so the list view can show an
   accurate badge without a second call, and so a scan that ran against
   an empty/unseeded list still reads as such after a refresh.
+- The API checks PDF/DOCX file signatures in addition to file extensions.
+  Bulk upload accepts at most 20 files and 50 MB total; each file is at
+  most 10 MB.
 - Uploaded files are saved to `backend/uploads/` (gitignored) — swap
   `middleware/upload.js`'s disk storage for S3/GCS-backed storage before
   production use.
@@ -251,19 +260,43 @@ trade that away for cases these heuristics still miss (e.g. narrative
 prose with no clean date ranges). Flagging that as a real design decision
 this file doesn't resolve on its own, not an oversight.
 
-## What's scaffolded vs. what's next
+## Jobseeker accounts and applications
 
-Built now: JWT auth (login/refresh/me), role-protected candidate CRUD,
-role-protected team management, the DB init/seed script, resume upload +
-fraud watch-list screening at registration time, job matching/ranking with
-timeline-derived skill years, and deterministic employment-overlap /
-unrealistic-growth checks (all above) — plus a React shell (login,
-dashboard, candidates list + register-with-resume form + re-screening,
-team & roles page with role dropdown — visible only to admins).
+Jobseekers can create an account at `/jobseeker-signup`, browse open
+postings at `/careers`, apply with a PDF or DOCX resume, and follow their
+application status at `/my-applications`. Jobseekers cannot access
+employer, team, or institution-scoped candidate APIs. Applications enter
+the employer's existing candidate pipeline and use the same resume
+screening workflow.
 
-Not yet built (present in the original spec, not requested in this pass):
-OTP sign-in, a frontend table/UI for the new `/jobs/:id/matches` ranking
-endpoint (the API is ready; nothing renders it yet), interview-invite
-drafting, audit log UI, reports/export. The Mongo schemas and audit_log
-collection are already in place for these — the models are in
-`backend/models/`.
+- The signed-in jobseeker profile (`/profile`) can store one private PDF or
+  DOCX resume (up to 10 MB); a new upload replaces the previous file.
+- `POST /auth/profile/resume`, `GET /auth/profile/resume`, and
+  `DELETE /auth/profile/resume` upload, download, and remove only the
+  authenticated jobseeker's own resume.
+- `GET /jobs/public` and `GET /jobs/public/:id` return only open postings.
+- `POST /applications` accepts multipart `jobId`, `resume`, and optional
+  `phone`; repeat applications to the same job are rejected.
+- `GET /applications` returns only the signed-in jobseeker's applications.
+- Employers can view job applications at `GET /jobs/:id/applications`
+  and update status at
+  `PATCH /jobs/:id/applications/:applicationId/status`.
+
+## API security and tests
+
+Configure `CORS_ORIGINS` as comma-separated exact frontend origins.
+Set `TRUST_PROXY=true` only when running behind one trusted reverse
+proxy. The API uses Helmet, bounded JSON and upload sizes, per-IP
+authentication throttling, and centralized Express 4 async error
+handling. Access and refresh JWT secrets must be different random values
+of at least 32 characters. New account and reset passwords require at
+least 8 characters.
+
+Run backend tests with `npm test` from `backend/`. The repository root
+`.gitignore` excludes generated bundles, uploads, dependency folders,
+editor configuration, and environment files.
+
+## What's not included yet
+
+Not yet built: OTP sign-in, a real payment gateway, audit-log UI, and
+reports/export.

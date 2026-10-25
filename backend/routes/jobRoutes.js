@@ -5,11 +5,73 @@ const Candidate = require('../models/Candidate');
 const Screening = require('../models/Screening');
 const Company = require('../models/Company');
 const AuditLog = require('../models/AuditLog');
+const JobApplication = require('../models/JobApplication');
 const { requireAuth, requireRole, resolveCompanyScope } = require('../middleware/auth');
 const { computeMatchScore } = require('../utils/jobMatching');
 const { PLAN_LIMITS, PLAN_LABELS } = require('../config/plans');
 
 const router = express.Router();
+
+// Public job board. Only open postings and their public-facing fields are
+// returned; employer-only endpoints remain behind the JWT middleware below.
+router.get('/public', async (req, res) => {
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 10, 1), 50);
+  const match = { status: 'open' };
+  if (typeof req.query.search === 'string' && req.query.search.trim()) {
+    const escaped = req.query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    match.$or = [
+      { title: { $regex: escaped, $options: 'i' } },
+      { description: { $regex: escaped, $options: 'i' } },
+      { 'requiredSkills.name': { $regex: escaped, $options: 'i' } },
+    ];
+  }
+  if (typeof req.query.location === 'string' && req.query.location.trim()) {
+    const escaped = req.query.location.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    match.location = { $regex: escaped, $options: 'i' };
+  }
+  if (['full-time', 'part-time', 'contract', 'internship'].includes(req.query.employmentType)) {
+    match.employmentType = req.query.employmentType;
+  }
+  if (['onsite', 'hybrid', 'remote'].includes(req.query.workMode)) {
+    match.workMode = req.query.workMode;
+  }
+  const minSalaryLpa = Number(req.query.minSalaryLpa);
+  if (Number.isFinite(minSalaryLpa) && minSalaryLpa > 0) {
+    match.$and = [
+      ...(match.$and || []),
+      { $or: [{ salaryMaxLpa: { $gte: minSalaryLpa } }, { salaryMinLpa: { $gte: minSalaryLpa } }] },
+    ];
+  }
+  const minExperienceYears = Number(req.query.minExperienceYears);
+  if (Number.isFinite(minExperienceYears) && minExperienceYears > 0) {
+    match.$and = [
+      ...(match.$and || []),
+      { $or: [{ minExperienceYears: { $lte: minExperienceYears } }, { minExperienceYears: { $exists: false } }] },
+    ];
+  }
+  const [items, total] = await Promise.all([
+    Job.find(match)
+      .select('title description requiredSkills minExperienceYears location employmentType workMode salaryMinLpa salaryMaxLpa companyId createdAt')
+      .populate('companyId', 'name')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    Job.countDocuments(match),
+  ]);
+  res.json({ items, total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) });
+});
+
+router.get('/public/:id', async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    return res.status(400).json({ error: 'Invalid job id' });
+  }
+  const job = await Job.findOne({ _id: req.params.id, status: 'open' })
+    .select('title description requiredSkills minExperienceYears location employmentType workMode salaryMinLpa salaryMaxLpa companyId createdAt')
+    .populate('companyId', 'name');
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json(job);
+});
 
 router.use(requireAuth);
 // Resolves a superadmin's selected institution (x-company-id header) into
@@ -179,14 +241,68 @@ router.get('/:id/matches', requireRole('admin', 'recruiter', 'viewer', 'superadm
   });
 });
 
+router.get('/:id/applications', requireRole('admin', 'recruiter', 'viewer', 'superadmin'), async (req, res) => {
+  const job = await Job.findOne({ _id: req.params.id, companyId: req.user.companyId });
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  const applications = await JobApplication.find({ jobId: job._id, companyId: req.user.companyId })
+    .populate('applicantId', 'name email mobile')
+    .populate('candidateId', 'name email phone skills totalYearsExperience resumeFileKey')
+    .sort({ appliedAt: -1 });
+  res.json({ job: { id: job._id, title: job.title }, applications });
+});
+
+router.patch('/:id/applications/:applicationId/status', requireRole('admin', 'recruiter'), async (req, res) => {
+  const allowedStatuses = ['reviewing', 'shortlisted', 'rejected', 'hired'];
+  if (!allowedStatuses.includes(req.body.status)) {
+    return res.status(400).json({ error: `status must be one of: ${allowedStatuses.join(', ')}` });
+  }
+  const application = await JobApplication.findOneAndUpdate(
+    {
+      _id: req.params.applicationId,
+      jobId: req.params.id,
+      companyId: req.user.companyId,
+    },
+    { status: req.body.status },
+    { new: true, runValidators: true }
+  ).populate('applicantId', 'name email');
+  if (!application) return res.status(404).json({ error: 'Application not found' });
+
+  await AuditLog.create({
+    userId: req.user.id,
+    action: 'update_application_status',
+    entityType: 'job_application',
+    entityId: application._id,
+    metadata: { status: application.status },
+  });
+  res.json(application);
+});
+
 // POST /jobs - create a job posting (title + JD text, plus optional
 // requiredSkills / minExperienceYears used by the matching engine above).
 // Candidates are registered against one of these, so this has to exist
 // first.
 router.post('/', requireRole('admin', 'recruiter'), async (req, res) => {
-  const { title, description, requiredSkills, minExperienceYears, interviewPanel } = req.body;
+  const {
+    title, description, requiredSkills, minExperienceYears, interviewPanel,
+    location, employmentType, workMode, salaryMinLpa, salaryMaxLpa,
+  } = req.body;
   if (!title || !title.trim()) return res.status(400).json({ error: 'A job title is required' });
   if (!description || !description.trim()) return res.status(400).json({ error: 'A job description is required' });
+  if (employmentType != null && employmentType !== '' && !['full-time', 'part-time', 'contract', 'internship'].includes(employmentType)) {
+    return res.status(400).json({ error: 'Invalid employment type' });
+  }
+  if (workMode != null && workMode !== '' && !['onsite', 'hybrid', 'remote'].includes(workMode)) {
+    return res.status(400).json({ error: 'Invalid work mode' });
+  }
+  const cleanMinSalary = salaryMinLpa === '' || salaryMinLpa == null ? undefined : Number(salaryMinLpa);
+  const cleanMaxSalary = salaryMaxLpa === '' || salaryMaxLpa == null ? undefined : Number(salaryMaxLpa);
+  if ((cleanMinSalary !== undefined && (!Number.isFinite(cleanMinSalary) || cleanMinSalary < 0)) ||
+      (cleanMaxSalary !== undefined && (!Number.isFinite(cleanMaxSalary) || cleanMaxSalary < 0))) {
+    return res.status(400).json({ error: 'Salary range must use non-negative LPA values' });
+  }
+  if (cleanMinSalary !== undefined && cleanMaxSalary !== undefined && cleanMaxSalary < cleanMinSalary) {
+    return res.status(400).json({ error: 'Maximum salary must be greater than or equal to minimum salary' });
+  }
 
   // Plan enforcement - not just a number on the pricing page. A company
   // on the free plan (10 jobs) genuinely cannot post an 11th until they
@@ -223,6 +339,11 @@ router.post('/', requireRole('admin', 'recruiter'), async (req, res) => {
   const job = await Job.create({
     title: title.trim(),
     description: description.trim(),
+    location: typeof location === 'string' ? location.trim() || undefined : undefined,
+    employmentType: employmentType || undefined,
+    workMode: workMode || undefined,
+    salaryMinLpa: cleanMinSalary,
+    salaryMaxLpa: cleanMaxSalary,
     requiredSkills: cleanedSkills,
     minExperienceYears: minExperienceYears === '' || minExperienceYears == null ? undefined : Number(minExperienceYears),
     interviewPanel: cleanedPanel,
@@ -250,7 +371,10 @@ router.patch('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
   const job = await Job.findOne({ _id: req.params.id, companyId: req.user.companyId });
   if (!job) return res.status(404).json({ error: 'Job not found' });
 
-  const { title, description, requiredSkills, minExperienceYears, interviewPanel } = req.body;
+  const {
+    title, description, requiredSkills, minExperienceYears, interviewPanel,
+    location, employmentType, workMode, salaryMinLpa, salaryMaxLpa,
+  } = req.body;
   const update = {};
 
   if (title !== undefined) {
@@ -261,6 +385,43 @@ router.patch('/:id', requireRole('admin', 'recruiter'), async (req, res) => {
   if (description !== undefined) {
     if (!description.trim()) return res.status(400).json({ error: 'A job description is required' });
     update.description = description.trim();
+  }
+
+  if (location !== undefined) {
+    if (typeof location !== 'string') return res.status(400).json({ error: 'Location must be text' });
+    update.location = location.trim() || undefined;
+  }
+
+  if (employmentType !== undefined) {
+    if (employmentType !== '' && !['full-time', 'part-time', 'contract', 'internship'].includes(employmentType)) {
+      return res.status(400).json({ error: 'Invalid employment type' });
+    }
+    update.employmentType = employmentType || undefined;
+  }
+
+  if (workMode !== undefined) {
+    if (workMode !== '' && !['onsite', 'hybrid', 'remote'].includes(workMode)) {
+      return res.status(400).json({ error: 'Invalid work mode' });
+    }
+    update.workMode = workMode || undefined;
+  }
+
+  if (salaryMinLpa !== undefined || salaryMaxLpa !== undefined) {
+    const min = salaryMinLpa === '' || salaryMinLpa == null
+      ? (salaryMinLpa !== undefined ? undefined : job.salaryMinLpa)
+      : Number(salaryMinLpa);
+    const max = salaryMaxLpa === '' || salaryMaxLpa == null
+      ? (salaryMaxLpa !== undefined ? undefined : job.salaryMaxLpa)
+      : Number(salaryMaxLpa);
+    if ((min !== undefined && (!Number.isFinite(min) || min < 0)) ||
+        (max !== undefined && (!Number.isFinite(max) || max < 0))) {
+      return res.status(400).json({ error: 'Salary range must use non-negative LPA values' });
+    }
+    if (min !== undefined && max !== undefined && max < min) {
+      return res.status(400).json({ error: 'Maximum salary must be greater than or equal to minimum salary' });
+    }
+    if (salaryMinLpa !== undefined) update.salaryMinLpa = min;
+    if (salaryMaxLpa !== undefined) update.salaryMaxLpa = max;
   }
 
   if (requiredSkills !== undefined) {

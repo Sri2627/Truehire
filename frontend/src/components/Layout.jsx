@@ -14,11 +14,12 @@ export default function Layout({ children }) {
   // tenant's fraud list is actually populated - the two facts that are
   // otherwise invisible when a scan silently comes back with 0 matches.
   useEffect(() => {
+    if (user?.role === 'jobseeker') return;
     api
       .get('/auth/me')
       .then((res) => setMe(res.data))
       .catch(() => setMe(null));
-  }, []);
+  }, [user?.role]);
 
   function handleLogout() {
     logout();
@@ -57,11 +58,31 @@ export default function Layout({ children }) {
           </>
         )}
 
+        {user?.role === 'jobseeker' && (
+          <>
+            <NavLink to="/jobseeker-dashboard" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Dashboard
+            </NavLink>
+            <NavLink to="/careers" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Browse jobs
+            </NavLink>
+            <NavLink to="/my-applications" className={({ isActive }) => (isActive ? 'active' : '')}>
+              My applications
+            </NavLink>
+            <NavLink to="/resume-builder" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Resume builder
+            </NavLink>
+            <NavLink to="/profile" className={({ isActive }) => (isActive ? 'active' : '')}>
+              Profile
+            </NavLink>
+          </>
+        )}
+
         {/* A superadmin only sees these once it has picked an institution
             to look at (see pages/Institutions.jsx "View") - otherwise
             there's nothing scoped to show yet. Every other role always
             sees these, scoped to their own company. */}
-        {(!isSuperAdmin || selectedInstitution) && (
+        {user?.role !== 'jobseeker' && (!isSuperAdmin || selectedInstitution) && (
           <>
             <NavLink to="/dashboard" className={({ isActive }) => (isActive ? 'active' : '')}>
               Dashboard

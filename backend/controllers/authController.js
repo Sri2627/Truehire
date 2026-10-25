@@ -7,6 +7,8 @@ const AuditLog = require('../models/AuditLog');
 const FraudCompany = require('../models/FraudCompany');
 const { PLAN_PRICING } = require('../config/plans');
 const { sendPasswordResetEmail } = require('../utils/mailer');
+const { ROLES } = require('../models/User');
+const TEAM_ROLES = ROLES.filter((role) => ['admin', 'recruiter', 'viewer'].includes(role));
 
 const RESET_CODE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 // Generic response for forgot-password so the API never reveals whether a
@@ -24,6 +26,16 @@ const FORGOT_PASSWORD_GENERIC_MESSAGE =
 // checking a plain 'superadmin' string without knowing about the flag.
 function effectiveRole(user) {
   return user.isSuperAdmin ? 'superadmin' : user.role;
+}
+
+function profileResponse(profile) {
+  if (!profile) return profile;
+  const result = profile.toObject ? profile.toObject() : { ...profile };
+  if (result.resume) {
+    const { fileKey, ...resume } = result.resume;
+    result.resume = resume;
+  }
+  return result;
 }
 
 function signTokens(user) {
@@ -61,12 +73,20 @@ function signTokens(user) {
 async function signupCompany(req, res) {
   try {
     const { companyName, name, email, mobile, password, plan } = req.body;
+    if ((email != null && typeof email !== 'string') || (mobile != null && typeof mobile !== 'string')) {
+      return res.status(400).json({ error: 'email and mobile must be strings' });
+    }
+    const normalizedEmail = email?.trim().toLowerCase() || undefined;
+    const normalizedMobile = mobile?.trim() || undefined;
 
-    if (!companyName || !companyName.trim()) {
+    if (typeof companyName !== 'string' || !companyName.trim()) {
       return res.status(400).json({ error: 'An institution/company name is required' });
     }
-    if (!name || !password || (!email && !mobile)) {
+    if (typeof name !== 'string' || !name.trim() || typeof password !== 'string' || (!normalizedEmail && !normalizedMobile)) {
       return res.status(400).json({ error: 'name, password, and email or mobile are required' });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
     }
     // Chosen on the pricing step before this form is submitted (see
     // frontend/src/pages/Signup.jsx) - falls back to 'free' if omitted
@@ -76,7 +96,11 @@ async function signupCompany(req, res) {
       return res.status(400).json({ error: `plan must be one of: ${Object.keys(PLAN_PRICING).join(', ')}` });
     }
 
-    const existing = await User.findOne({ $or: [{ email }, { mobile }] });
+    const identity = [
+      ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
+      ...(normalizedMobile ? [{ mobile: normalizedMobile }] : []),
+    ];
+    const existing = await User.findOne({ $or: identity });
     if (existing) {
       return res.status(409).json({ error: 'A user with that email or mobile already exists' });
     }
@@ -87,9 +111,9 @@ async function signupCompany(req, res) {
     try {
       const passwordHash = await bcrypt.hash(password, 12);
       user = await User.create({
-        name,
-        email,
-        mobile,
+        name: name.trim(),
+        email: normalizedEmail,
+        mobile: normalizedMobile,
         passwordHash,
         role: 'admin', // first user of a new institution is always its admin
         companyId: company._id,
@@ -125,22 +149,91 @@ async function signupCompany(req, res) {
       company: { id: company._id, name: company.name, plan: company.plan },
     });
   } catch (err) {
-    res.status(500).json({ error: 'Could not create institution', detail: err.message });
+    if (err.code === 11000) return res.status(409).json({ error: 'A user with that email or mobile already exists' });
+    console.error('[signupCompany] failed:', err.message);
+    res.status(500).json({ error: 'Could not create institution' });
   }
 }
 
-// POST /auth/register - creates a new HR user. In production, restrict this
-// to admins inviting teammates (see routes/teamRoutes.js pattern); left open
-// here so you can create the first account without the seed script if needed.
+// Public registration is reserved for jobseekers. Employer users are
+// provisioned by signupCompany or by an institution admin through /team.
+async function signupJobseeker(req, res) {
+  try {
+    const { name, email, mobile, password } = req.body;
+    if ((email != null && typeof email !== 'string') || (mobile != null && typeof mobile !== 'string')) {
+      return res.status(400).json({ error: 'email and mobile must be strings' });
+    }
+    const normalizedEmail = email?.trim().toLowerCase() || undefined;
+    const normalizedMobile = mobile?.trim() || undefined;
+
+    if (typeof name !== 'string' || !name.trim() || typeof password !== 'string' || (!normalizedEmail && !normalizedMobile)) {
+      return res.status(400).json({ error: 'name, password, and email or mobile are required' });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const existing = await User.findOne({
+      $or: [
+        ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
+        ...(normalizedMobile ? [{ mobile: normalizedMobile }] : []),
+      ],
+    });
+    if (existing) {
+      return res.status(409).json({ error: 'A user with that email or mobile already exists' });
+    }
+
+    const user = await User.create({
+      name: name.trim(),
+      email: normalizedEmail,
+      mobile: normalizedMobile,
+      passwordHash: await bcrypt.hash(password, 12),
+      role: 'jobseeker',
+    });
+    const tokens = signTokens(user);
+
+    res.status(201).json({
+      ...tokens,
+      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+    });
+  } catch (err) {
+    if (err.code === 11000) return res.status(409).json({ error: 'A user with that email or mobile already exists' });
+    console.error('[signupJobseeker] failed:', err.message);
+    res.status(500).json({ error: 'Could not create jobseeker account' });
+  }
+}
+
+// POST /auth/register - institution admins can add only tenant-scoped
+// operational roles. Public self-registration uses /jobseeker-signup.
 async function register(req, res) {
   try {
     const { name, email, mobile, password, role, companyId } = req.body;
+    if ((email != null && typeof email !== 'string') || (mobile != null && typeof mobile !== 'string')) {
+      return res.status(400).json({ error: 'email and mobile must be strings' });
+    }
+    const normalizedEmail = email?.trim().toLowerCase() || undefined;
+    const normalizedMobile = mobile?.trim() || undefined;
 
-    if (!name || !password || (!email && !mobile)) {
+    if (typeof name !== 'string' || !name.trim() || typeof password !== 'string' || (!normalizedEmail && !normalizedMobile)) {
       return res.status(400).json({ error: 'name, password, and email or mobile are required' });
     }
+    if (password.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+    if (companyId && String(companyId) !== String(req.user.companyId)) {
+      return res.status(403).json({ error: 'You cannot create users for another institution' });
+    }
+    const assignedRole = role || 'recruiter';
+    if (!TEAM_ROLES.includes(assignedRole)) {
+      return res.status(400).json({ error: `role must be one of: ${TEAM_ROLES.join(', ')}` });
+    }
 
-    const existing = await User.findOne({ $or: [{ email }, { mobile }] });
+    const existing = await User.findOne({
+      $or: [
+        ...(normalizedEmail ? [{ email: normalizedEmail }] : []),
+        ...(normalizedMobile ? [{ mobile: normalizedMobile }] : []),
+      ],
+    });
     if (existing) {
       return res.status(409).json({ error: 'A user with that email or mobile already exists' });
     }
@@ -148,12 +241,12 @@ async function register(req, res) {
     const passwordHash = await bcrypt.hash(password, 12);
 
     const user = await User.create({
-      name,
-      email,
-      mobile,
+      name: name.trim(),
+      email: normalizedEmail,
+      mobile: normalizedMobile,
       passwordHash,
-      role: role || 'recruiter',
-      companyId,
+      role: assignedRole,
+      companyId: req.user.companyId,
     });
 
     res.status(201).json({
@@ -163,7 +256,9 @@ async function register(req, res) {
       role: user.role,
     });
   } catch (err) {
-    res.status(500).json({ error: 'Registration failed', detail: err.message });
+    if (err.code === 11000) return res.status(409).json({ error: 'A user with that email or mobile already exists' });
+    console.error('[register] failed:', err.message);
+    res.status(500).json({ error: 'Registration failed' });
   }
 }
 
@@ -172,12 +267,12 @@ async function login(req, res) {
   try {
     const { identifier, password } = req.body;
 
-    if (!identifier || !password) {
+    if (typeof identifier !== 'string' || !identifier.trim() || typeof password !== 'string' || !password) {
       return res.status(400).json({ error: 'identifier and password are required' });
     }
 
     const user = await User.findOne({
-      $or: [{ email: identifier.toLowerCase() }, { mobile: identifier }],
+      $or: [{ email: identifier.trim().toLowerCase() }, { mobile: identifier.trim() }],
     });
 
     if (!user) {
@@ -221,30 +316,38 @@ async function login(req, res) {
       user: { id: user._id, name: user.name, email: user.email, role: effectiveRole(user) },
     });
   } catch (err) {
-    res.status(500).json({ error: 'Login failed', detail: err.message });
+    console.error('[login] failed:', err.message);
+    res.status(500).json({ error: 'Login failed' });
   }
 }
 
 // POST /auth/refresh - exchange a refresh token for a new access token.
 async function refresh(req, res) {
-  try {
-    const { refreshToken } = req.body;
-    if (!refreshToken) {
-      return res.status(400).json({ error: 'refreshToken is required' });
-    }
-
-    const payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
-
-    const accessToken = jwt.sign(
-      { id: payload.id, role: payload.role, companyId: payload.companyId },
-      process.env.JWT_ACCESS_SECRET,
-      { expiresIn: process.env.JWT_ACCESS_EXPIRY || '30m' }
-    );
-
-    res.json({ accessToken });
-  } catch (err) {
-    res.status(401).json({ error: 'Invalid or expired refresh token' });
+  const { refreshToken } = req.body;
+  if (!refreshToken) {
+    return res.status(400).json({ error: 'refreshToken is required' });
   }
+
+  let payload;
+  try {
+    payload = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+  } catch (err) {
+    return res.status(401).json({ error: 'Invalid or expired refresh token' });
+  }
+
+  const user = await User.findById(payload.id);
+  if (!user) return res.status(401).json({ error: 'Invalid or expired refresh token' });
+  const role = effectiveRole(user);
+  const accessToken = jwt.sign(
+    {
+      id: user._id.toString(),
+      role,
+      companyId: role === 'superadmin' ? null : user.companyId,
+    },
+    process.env.JWT_ACCESS_SECRET,
+    { expiresIn: process.env.JWT_ACCESS_EXPIRY || '30m' }
+  );
+  res.json({ accessToken });
 }
 
 // GET /auth/me - current user profile (requireAuth already ran). Includes
@@ -272,6 +375,7 @@ async function me(req, res) {
   const institutionsCount = role === 'superadmin' ? await Company.countDocuments({}) : undefined;
 
   const { isSuperAdmin, ...rest } = user.toObject();
+  rest.profile = profileResponse(rest.profile);
 
   res.json({
     ...rest,
@@ -282,6 +386,103 @@ async function me(req, res) {
   });
 }
 
+async function updateJobseekerProfile(req, res) {
+  const { name, email, mobile, profile } = req.body;
+  if (typeof name !== 'string' || !name.trim()) {
+    return res.status(400).json({ error: 'A name is required' });
+  }
+  if ((email != null && typeof email !== 'string') || (mobile != null && typeof mobile !== 'string')) {
+    return res.status(400).json({ error: 'Email and mobile must be strings' });
+  }
+  if (profile !== undefined && (!profile || typeof profile !== 'object' || Array.isArray(profile))) {
+    return res.status(400).json({ error: 'Profile details must be an object' });
+  }
+
+  const user = await User.findById(req.user.id);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.role !== 'jobseeker') return res.status(403).json({ error: 'Jobseeker profile access required' });
+
+  const normalizedEmail = email?.trim().toLowerCase() || undefined;
+  const normalizedMobile = mobile?.trim() || undefined;
+  if (!normalizedEmail && !normalizedMobile) {
+    return res.status(400).json({ error: 'Provide at least an email address or mobile number' });
+  }
+
+  user.name = name.trim();
+  user.email = normalizedEmail;
+  user.mobile = normalizedMobile;
+
+  if (profile !== undefined) {
+    const allowedFields = [
+      'headline', 'location', 'summary', 'skills',
+      'experience', 'education', 'linkedin', 'portfolio',
+    ];
+    const unexpectedFields = Object.keys(profile).filter((field) => !allowedFields.includes(field));
+    if (unexpectedFields.length) {
+      return res.status(400).json({ error: `Unsupported profile field: ${unexpectedFields[0]}` });
+    }
+    const stringFields = ['headline', 'location', 'summary', 'linkedin', 'portfolio'];
+    for (const field of stringFields) {
+      if (profile[field] !== undefined && typeof profile[field] !== 'string') {
+        return res.status(400).json({ error: `${field} must be text` });
+      }
+    }
+    if (profile.skills !== undefined &&
+        (!Array.isArray(profile.skills) || profile.skills.some((skill) => typeof skill !== 'string'))) {
+      return res.status(400).json({ error: 'skills must be a list of text values' });
+    }
+    const listFields = [
+      ['experience', ['title', 'company', 'startDate', 'endDate', 'description']],
+      ['education', ['degree', 'institution', 'graduationYear']],
+    ];
+    for (const [field, allowedItemFields] of listFields) {
+      if (profile[field] === undefined) continue;
+      if (!Array.isArray(profile[field]) || profile[field].some((item) =>
+        !item || typeof item !== 'object' || Array.isArray(item) ||
+        Object.keys(item).some((itemField) => !allowedItemFields.includes(itemField)) ||
+        Object.values(item).some((value) => typeof value !== 'string')
+      )) {
+        return res.status(400).json({ error: `${field} must be a list of valid profile entries` });
+      }
+    }
+
+    user.profile = {
+      ...(user.profile?.toObject ? user.profile.toObject() : user.profile || {}),
+      ...profile,
+      skills: profile.skills === undefined
+        ? user.profile?.skills
+        : [...new Set(profile.skills.map((skill) => skill.trim()).filter(Boolean))],
+      experience: profile.experience === undefined
+        ? user.profile?.experience
+        : profile.experience,
+      education: profile.education === undefined
+        ? user.profile?.education
+        : profile.education,
+    };
+  }
+
+  try {
+    await user.save();
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'That email or mobile number is already used by another account' });
+    }
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({ error: err.message });
+    }
+    throw err;
+  }
+
+  res.json({
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    mobile: user.mobile,
+    role: user.role,
+    profile: profileResponse(user.profile),
+  });
+}
+
 // POST /auth/forgot-password - identifier (email or mobile) -> emails a
 // 6-digit code if an account exists. Always responds with the same generic
 // message either way, so the endpoint can't be used to probe which emails
@@ -289,7 +490,7 @@ async function me(req, res) {
 async function forgotPassword(req, res) {
   try {
     const { identifier } = req.body;
-    if (!identifier || !identifier.trim()) {
+    if (typeof identifier !== 'string' || !identifier.trim()) {
       return res.status(400).json({ error: 'identifier (email or mobile) is required' });
     }
 
@@ -324,7 +525,8 @@ async function forgotPassword(req, res) {
 
     res.json({ message: FORGOT_PASSWORD_GENERIC_MESSAGE });
   } catch (err) {
-    res.status(500).json({ error: 'Could not process request', detail: err.message });
+    console.error('[forgotPassword] failed:', err.message);
+    res.status(500).json({ error: 'Could not process request' });
   }
 }
 
@@ -334,15 +536,21 @@ async function resetPassword(req, res) {
   try {
     const { identifier, code, newPassword } = req.body;
 
-    if (!identifier || !code || !newPassword) {
+    if (
+      typeof identifier !== 'string' ||
+      !identifier.trim() ||
+      typeof code !== 'string' ||
+      typeof newPassword !== 'string' ||
+      !newPassword
+    ) {
       return res.status(400).json({ error: 'identifier, code, and newPassword are required' });
     }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'newPassword must be at least 6 characters' });
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: 'newPassword must be at least 8 characters' });
     }
 
     const user = await User.findOne({
-      $or: [{ email: identifier.toLowerCase() }, { mobile: identifier }],
+      $or: [{ email: identifier.trim().toLowerCase() }, { mobile: identifier.trim() }],
     }).select('+resetCodeHash +resetCodeExpires');
 
     if (!user || !user.resetCodeHash || !user.resetCodeExpires) {
@@ -374,8 +582,12 @@ async function resetPassword(req, res) {
 
     res.json({ message: 'Password updated. You can now sign in with your new password.' });
   } catch (err) {
-    res.status(500).json({ error: 'Could not reset password', detail: err.message });
+    console.error('[resetPassword] failed:', err.message);
+    res.status(500).json({ error: 'Could not reset password' });
   }
 }
 
-module.exports = { signupCompany, register, login, refresh, me, forgotPassword, resetPassword };
+module.exports = {
+  signupCompany, signupJobseeker, register, login, refresh, me,
+  updateJobseekerProfile, forgotPassword, resetPassword,
+};

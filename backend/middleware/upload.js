@@ -8,6 +8,9 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 }
 
 const ALLOWED_EXT = ['.pdf', '.docx'];
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_BULK_FILES = 20;
+const MAX_BULK_SIZE = 50 * 1024 * 1024;
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
@@ -20,7 +23,9 @@ const storage = multer.diskStorage({
 function fileFilter(req, file, cb) {
   const ext = path.extname(file.originalname).toLowerCase();
   if (!ALLOWED_EXT.includes(ext)) {
-    return cb(new Error('Only PDF and DOCX resumes are supported'));
+    const error = new Error('Only PDF and DOCX resumes are supported');
+    error.code = 'UNSUPPORTED_RESUME_TYPE';
+    return cb(error);
   }
   cb(null, true);
 }
@@ -28,7 +33,7 @@ function fileFilter(req, file, cb) {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: MAX_FILE_SIZE, files: MAX_BULK_FILES, fields: 10, parts: MAX_BULK_FILES + 10 },
 });
 
-module.exports = { upload, UPLOAD_DIR };
+module.exports = { upload, UPLOAD_DIR, MAX_FILE_SIZE, MAX_BULK_FILES, MAX_BULK_SIZE };
